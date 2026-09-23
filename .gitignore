@@ -36,3 +36,6 @@ dist-ssr
 
 # Supabase CLI local state
 supabase/.temp
+
+# Local env (Vercel holds the real values)
+.env
