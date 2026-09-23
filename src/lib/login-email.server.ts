@@ -115,11 +115,11 @@ export async function sendLoginEmail(rawEmail: string): Promise<LoginEmailResult
   const link = `${getAppOrigin()}/auth?${params.toString()}`;
 
   const sender = process.env.GMAIL_USER!;
-  const { createMailer } = await import("./email-transport.server");
+  const { createMailer, formatSender } = await import("./email-transport.server");
   const mailer = await createMailer();
   try {
     await mailer.send({
-      from: `SponsorConnect <${sender}>`,
+      from: formatSender(sender),
       to: email,
       subject: `Your SponsorConnect sign-in code: ${code}`,
       html: buildLoginEmailHtml(code, link),

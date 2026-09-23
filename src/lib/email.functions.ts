@@ -70,8 +70,9 @@ export const sendOutreachEmail = createServerFn({ method: "POST" })
     const results: SendEmailResult["results"] = [];
     let mailer: Awaited<ReturnType<typeof import("./email-transport.server")["createMailer"]>> | null = null;
     let mailerErr: string | null = null;
+    const { createMailer, formatSender } = await import("./email-transport.server");
+    const fromHeader = formatSender(senderEmail);
     try {
-      const { createMailer } = await import("./email-transport.server");
       mailer = await createMailer();
     } catch (e: any) {
       mailerErr = e?.message || "Email transport unavailable.";
@@ -142,7 +143,7 @@ export const sendOutreachEmail = createServerFn({ method: "POST" })
 
       try {
         const { smtpResponse } = await mailer.send({
-          from: senderEmail,
+          from: fromHeader,
           to: r.email,
           subject: personalizedSubject,
           html,

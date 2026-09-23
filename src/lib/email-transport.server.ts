@@ -55,6 +55,66 @@ function normalizeRecipients(value?: string): string[] {
     .filter(Boolean);
 }
 
+/** "Display Name <address>" for the From header; the name is configurable via MAIL_FROM_NAME (ASCII). */
+export function formatSender(address: string): string {
+  const name = process.env.MAIL_FROM_NAME?.trim() || "IEEE Computer Society SRMIST";
+  return `${name.replace(/[<>"\r\n]/g, "")} <${address}>`;
+}
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  rarr: "→", larr: "←", middot: "·", copy: "©", mdash: "—", ndash: "–", hellip: "…",
+};
+
+/** Plain-text rendering of an HTML email, sent alongside it (HTML-only mail scores worse with spam filters). */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<(head|style|script)\b[\s\S]*?<\/\1>/gi, "")
+    .replace(/<a\s[^>]*?href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (_m, _q, href: string, inner: string) => {
+      const label = inner.replace(/<[^>]+>/g, "").trim();
+      if (!label) return ""; // image-only link
+      const target = href.replace(/^mailto:/i, "");
+      return label === target ? label : `${label} (${href})`;
+    })
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<li\b[^>]*>/gi, "\n- ")
+    .replace(/<\/(p|div|h[1-6]|tr|table|ul|ol|blockquote)>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+      if (e[0] === "#") {
+        const code = e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : m;
+      }
+      return NAMED_ENTITIES[e.toLowerCase()] ?? m;
+    })
+    .split("\n")
+    .map((line) => line.replace(/[ \t ]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** multipart/alternative body: plain text first, HTML last (clients show the last part they support). */
+function buildAlternativeBody(html: string): { contentType: string; lines: string[] } {
+  const boundary = `=_alt_${crypto.randomUUID().replaceAll("-", "")}`;
+  return {
+    contentType: `multipart/alternative; boundary="${boundary}"`,
+    lines: [
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      wrapBase64(toBase64Utf8(htmlToText(html))),
+      `--${boundary}`,
+      'Content-Type: text/html; charset="UTF-8"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      wrapBase64(toBase64Utf8(html)),
+      `--${boundary}--`,
+    ],
+  };
+}
+
 function buildMimeMessage(opts: {
   from: string;
   to: string;
@@ -74,23 +134,18 @@ function buildMimeMessage(opts: {
     `Date: ${new Date().toUTCString()}`,
   ].filter(Boolean);
 
+  const body = buildAlternativeBody(opts.html);
+
   if (!opts.attachments?.length) {
-    return [
-      ...headers,
-      'Content-Type: text/html; charset="UTF-8"',
-      "Content-Transfer-Encoding: base64",
-      "",
-      wrapBase64(toBase64Utf8(opts.html)),
-    ].join("\r\n");
+    return [...headers, `Content-Type: ${body.contentType}`, "", ...body.lines, ""].join("\r\n");
   }
 
   const boundary = `=_aicssyc_${crypto.randomUUID().replaceAll("-", "")}`;
   const parts = [
     `--${boundary}`,
-    'Content-Type: text/html; charset="UTF-8"',
-    "Content-Transfer-Encoding: base64",
+    `Content-Type: ${body.contentType}`,
     "",
-    wrapBase64(toBase64Utf8(opts.html)),
+    ...body.lines,
     ...opts.attachments.flatMap((attachment) => [
       `--${boundary}`,
       `Content-Type: ${sanitizeHeader(attachment.contentType || "application/octet-stream")}; name="${sanitizeHeader(attachment.filename)}"`,
