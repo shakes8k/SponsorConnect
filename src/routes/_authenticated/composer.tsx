@@ -13,6 +13,7 @@ import {
 } from "@/lib/templates.functions";
 import { buildEmailHtml, type TemplateType } from "@/lib/email-template";
 import { importEmailHtml } from "@/lib/html-import";
+import { renderSkin, skinSlots, type SkinSlot } from "@/lib/email-skin";
 import { AppHeader } from "@/components/AppHeader";
 import { RichMarkdownEditor } from "@/components/RichMarkdownEditor";
 import { TemplateManagerModal } from "@/components/TemplateManagerModal";
@@ -100,10 +101,18 @@ type TemplatePreset = {
   headerBg?: string;
   headerImageUrl?: string;
   footerImageUrl?: string;
+  /** Uploaded email design; replaces the standard layout (see email-skin.ts). */
+  layoutHtml?: string;
 };
 
-/** Set after an HTML file is imported: its name, plus the layout images taken from it. */
-type ImportedLayout = { fileName: string; headerImageUrl?: string; footerImageUrl?: string; logoUrls?: string[] };
+/** Set after an HTML file is imported: its name, plus its design or the layout images taken from it. */
+type ImportedLayout = {
+  fileName: string;
+  headerImageUrl?: string;
+  footerImageUrl?: string;
+  logoUrls?: string[];
+  layoutHtml?: string;
+};
 
 const MAX_HTML_BYTES = 2_000_000;
 
@@ -123,6 +132,7 @@ function templateToPreset(t: EmailTemplate): TemplatePreset {
     headerBg: (t as any).header_bg ?? undefined,
     headerImageUrl: (t as any).header_image_url ?? undefined,
     footerImageUrl: (t as any).footer_image_url ?? undefined,
+    layoutHtml: t.layout_html ?? undefined,
   };
 }
 
@@ -199,7 +209,7 @@ function Composer() {
     [allPresets, templateType],
   );
 
-  // Layout images/colours: from the imported file if there is one, otherwise from the selected template.
+  // Design / layout images: from the imported file if there is one, otherwise from the selected template.
   const layout = useMemo(
     () =>
       imported
@@ -208,15 +218,21 @@ function Composer() {
             headerBg: undefined,
             headerImageUrl: imported.headerImageUrl,
             footerImageUrl: imported.footerImageUrl,
+            layoutHtml: imported.layoutHtml,
           }
         : {
             logoUrls: currentTemplate?.logoUrls ?? [],
             headerBg: currentTemplate?.headerBg,
             headerImageUrl: currentTemplate?.headerImageUrl,
             footerImageUrl: currentTemplate?.footerImageUrl,
+            layoutHtml: currentTemplate?.layoutHtml,
           },
     [imported, currentTemplate],
   );
+
+  // With an uploaded design, only show the fields it has a place for.
+  const designSlots = useMemo(() => (layout.layoutHtml ? skinSlots(layout.layoutHtml) : null), [layout.layoutHtml]);
+  const hasSlot = (slot: SkinSlot) => !designSlots || designSlots.has(slot);
 
   const previewRecipient = parsedRecipients[0];
   const previewHtml = useMemo(() => {
@@ -224,6 +240,16 @@ function Composer() {
     const domain = previewRecipient?.domain || defaultDomain.trim();
     const merged = (s: string) =>
       s.replace(/\{\{\s*name\s*\}\}/gi, name).replace(/\{\{\s*domain\s*\}\}/gi, domain);
+    if (layout.layoutHtml) {
+      return renderSkin(layout.layoutHtml, {
+        tagline: merged(headerTagline),
+        dates: eventDates,
+        recipientName: name || undefined,
+        body: merged(body),
+        signOff: merged(signOff),
+        ctaButtons,
+      });
+    }
     return buildEmailHtml({
       templateType,
       markdownBody: merged(body),
@@ -276,6 +302,7 @@ function Composer() {
           headerBg: layout.headerBg, headerImageUrl: layout.headerImageUrl,
           footerImageUrl: layout.footerImageUrl,
           showAicssycLogo,
+          layoutHtml: layout.layoutHtml,
         },
       });
       const failed = res.results.filter((r) => !r.ok);
@@ -323,6 +350,7 @@ function Composer() {
       headerImageUrl: imp.headerImageUrl,
       footerImageUrl: imp.footerImageUrl,
       logoUrls: imp.logoUrls,
+      layoutHtml: imp.layoutHtml,
     });
 
     const filled = [
@@ -374,6 +402,7 @@ function Composer() {
           logo_urls: layout.logoUrls,
           header_image_url: layout.headerImageUrl || null,
           footer_image_url: layout.footerImageUrl || null,
+          layout_html: layout.layoutHtml ?? null,
         },
       });
       await refetchTemplates();
@@ -613,7 +642,9 @@ function Composer() {
                 {imported && (
                   <div style={{ border: `2px solid ${INK}`, background: PAPER, padding: "0.6rem 0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                     <div className="font-mono" style={{ fontSize: "0.72rem", color: INK, lineHeight: 1.5, overflowWrap: "anywhere" }}>
-                      ⬆ Fields below were filled from <strong>{imported.fileName}</strong>. Check them, then send{isAdmin ? " or save them as a template" : ""}.
+                      ⬆ Fields below were filled from <strong>{imported.fileName}</strong>
+                      {imported.layoutHtml ? ", and the email keeps its design (header, logos and footer come from the file)" : ""}.
+                      Check them, then send{isAdmin ? " or save them as a template" : ""}.
                     </div>
                     <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                       {isAdmin && (
@@ -633,15 +664,20 @@ function Composer() {
                   <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} className="sc-input" />
                 </Field>
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
-                  <Field label="Header tagline">
-                    <input type="text" value={headerTagline} onChange={(e) => setHeaderTagline(e.target.value)} className="sc-input" />
-                  </Field>
-                  <Field label="Event dates">
-                    <input type="text" value={eventDates} onChange={(e) => setEventDates(e.target.value)} className="sc-input" />
-                  </Field>
+                  {hasSlot("tagline") && (
+                    <Field label={designSlots ? "Heading" : "Header tagline"}>
+                      <input type="text" value={headerTagline} onChange={(e) => setHeaderTagline(e.target.value)} className="sc-input" />
+                    </Field>
+                  )}
+                  {hasSlot("dates") && (
+                    <Field label={designSlots ? "Line under the heading" : "Event dates"}>
+                      <input type="text" value={eventDates} onChange={(e) => setEventDates(e.target.value)} className="sc-input" />
+                    </Field>
+                  )}
                 </div>
 
                 {/* ── CTA Buttons Editor ── */}
+                {hasSlot("cta") && (
                 <div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.5rem" }}>
                     <label className="sc-label" style={{ margin: 0 }}>CTA BUTTONS</label>
@@ -707,8 +743,10 @@ function Composer() {
                     ))}
                   </div>
                 </div>
+                )}
 
-                {/* ── Social Links ── */}
+                {/* ── Social Links ── (the standard layout only; an uploaded design has its own) */}
+                {!designSlots && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <label className="sc-label" style={{ margin: 0 }}>SOCIAL LINKS (BODY)</label>
@@ -767,18 +805,23 @@ function Composer() {
                     ))}
                   </div>
                 </div>
+                )}
 
                 <Field label="Email body (Markdown)">
                   <RichMarkdownEditor value={body} onChange={setBody} height={300} preview="edit" />
                 </Field>
 
+                {hasSlot("signoff") && (
                 <Field label="Sign-off">
                   <RichMarkdownEditor value={signOff} onChange={setSignOff} height={110} preview="edit" />
+                  {!designSlots && (
                   <label style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "12px", fontSize: "0.85rem", fontWeight: 600 }}>
                     <input type="checkbox" checked={showAicssycLogo} onChange={(e) => setShowAicssycLogo(e.target.checked)} />
                     Include AICSSYC Logo Below Sign-off
                   </label>
+                  )}
                 </Field>
+                )}
               </div>
             </div>
 

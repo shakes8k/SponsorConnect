@@ -1,5 +1,7 @@
-// Turns an uploaded HTML email into the Composer's fields (subject, tagline, body, buttons, …),
-// so it is sent through the normal branded layout. Browser-only: uses DOMParser.
+// Turns an uploaded HTML email into the Composer's fields (subject, tagline, body, buttons, …).
+// Where possible the file's own design is kept as a "skin" (see email-skin.ts) with the fields
+// rendered into it; otherwise the fields go into the standard layout. Browser-only: uses DOMParser.
+import { makeSkin, type SkinMeta } from "./email-skin";
 
 export type ImportedEmail = {
   subject?: string;
@@ -15,9 +17,13 @@ export type ImportedEmail = {
   headerImageUrl?: string;
   footerImageUrl?: string;
   logoUrls?: string[];
+  /** The file's own design with slots for the fields; when set, it replaces the standard layout. */
+  layoutHtml?: string;
   /** Human-readable notes about what was dropped or guessed. */
   notes: string[];
 };
+
+const MAX_LAYOUT_CHARS = 1_000_000;
 
 const SOCIAL_PLATFORMS: Array<[RegExp, string]> = [
   [/linkedin\.com/i, "LinkedIn"],
@@ -52,7 +58,13 @@ export function importEmailHtml(html: string): ImportedEmail {
 
   // This app's own layout puts the tagline (not the subject) in <title>.
   if (doc.querySelector(".md-body")) return { subject: undefined, ...importOwnLayout(doc) };
-  return { subject, ...importGenericEmail(doc) };
+
+  const skin = importAsSkin(html);
+  if (skin) return { subject, ...skin };
+
+  const generic = importGenericEmail(doc);
+  generic.notes.unshift("Couldn't keep this file's design (its structure is unusual), so the text was put into the standard layout.");
+  return { subject, ...generic };
 }
 
 /** HTML produced by this app's own layout (e.g. via "Copy HTML"): every field maps back exactly. */
@@ -216,6 +228,196 @@ function importGenericEmail(doc: Document): Omit<ImportedEmail, "subject"> {
     logoUrls: logoUrls.length ? logoUrls : undefined,
     notes,
   };
+}
+
+/**
+ * Keeps the file's design: finds the heading, subtitle, greeting, body, button(s) and sign-off,
+ * swaps them for slot markers and returns their content as fields. Returns null when the
+ * structure is too unusual to split reliably (the caller then uses the standard layout).
+ */
+function importAsSkin(html: string): Omit<ImportedEmail, "subject"> | null {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  // Drop anything active. <style>, comments (Outlook conditionals) and the hidden preheader stay.
+  doc.querySelectorAll("script, noscript, iframe, object, embed, form").forEach((n) => n.remove());
+  doc.querySelectorAll("*").forEach((el) => {
+    for (const attr of Array.from(el.attributes)) {
+      const js = /^(href|src)$/i.test(attr.name) && /^\s*javascript:/i.test(attr.value);
+      if (/^on/i.test(attr.name) || js) el.removeAttribute(attr.name);
+    }
+  });
+  const root = doc.body;
+  const notes: string[] = [];
+
+  const heading = root.querySelector<HTMLElement>("h1") ?? root.querySelector<HTMLElement>("h2");
+  const subtitle = heading ? subtitleAfter(heading) : null;
+  const start = subtitle ?? heading;
+
+  // Text blocks in document order: the nearest block element around each piece of text.
+  const blocks: HTMLElement[] = [];
+  for (const text of walkText(root)) {
+    if (!clean(text.textContent)) continue;
+    const block = text.parentElement?.closest<HTMLElement>("p, li, h1, h2, h3, h4, h5, h6, td, th, div, blockquote");
+    if (block && !blocks.includes(block)) blocks.push(block);
+  }
+  const firstLine = (el: Element) => {
+    const copy = el.cloneNode(true) as Element;
+    copy.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+    return clean((copy.textContent ?? "").split("\n").find((l) => l.trim()) ?? "");
+  };
+  const afterStart = (el: Element) => !start || (precedes(start, el) && !start.contains(el));
+
+  const signOff = [...blocks].reverse().find((b) => {
+    const line = firstLine(b);
+    return afterStart(b) && line.length <= 40 && SIGN_OFF_START.test(line);
+  });
+  const buttons = Array.from(root.querySelectorAll<HTMLAnchorElement>("a[href]")).filter(
+    (a) =>
+      isHttp(a.getAttribute("href")) &&
+      clean(a.textContent) &&
+      looksLikeButton(a) &&
+      afterStart(a) &&
+      (!signOff || precedes(a, signOff)),
+  );
+  // The editable region runs from after the heading/subtitle to the sign-off (or, without one, the last button).
+  const end = signOff ?? buttons.at(-1);
+  if (!end) return null;
+  const inRegion = (el: Element) => afterStart(el) && (el === end || end.contains(el) || precedes(el, end));
+
+  const regionBlocks = blocks.filter(
+    (b) => inRegion(b) && b !== signOff && !buttons.some((a) => b.contains(a) || a.contains(b)) && !BOILERPLATE.test(clean(b.textContent)),
+  );
+  const greeting = regionBlocks.find((b, i) => i < 3 && GREETING.test(firstLine(b)));
+  const bodyBlocks = regionBlocks.filter((b) => b !== greeting && !greeting?.contains(b));
+  if (bodyBlocks.length === 0) return null;
+
+  const items: Element[] = [...bodyBlocks, ...buttons, ...(greeting ? [greeting] : []), ...(signOff ? [signOff] : [])];
+  const container = commonAncestor(items);
+  if (!container || container === root || container === doc.documentElement) return null;
+
+  type Role = "greeting" | "body" | "cta" | "signoff";
+  const kids = Array.from(container.children) as HTMLElement[];
+  const rolesOf = (kid: Element) => {
+    const roles = new Set<Role>();
+    if (greeting && kid.contains(greeting)) roles.add("greeting");
+    if (signOff && kid.contains(signOff)) roles.add("signoff");
+    if (buttons.some((a) => kid.contains(a))) roles.add("cta");
+    if (bodyBlocks.some((b) => kid.contains(b))) roles.add("body");
+    return roles;
+  };
+  const roles = kids.map(rolesOf);
+  if (roles.some((r) => r.size > 1)) return null; // e.g. a paragraph and the button in one cell
+  const first = roles.findIndex((r) => r.size > 0);
+  const last = findLastIndex(roles, (r) => r.size > 0);
+
+  const meta: SkinMeta = { v: 1 };
+  const bodyParts: string[] = [];
+  let signOffMd = "";
+  const placed = new Set<Role>();
+  const slotFor = (kid: Element, slot: Role) => {
+    const comment = doc.createComment(`sc:${slot}`);
+    // Inside table structure a slot needs its own row/cell, or the rendered HTML would end up outside the table.
+    const wrap = /^(TBODY|THEAD|TFOOT|TABLE)$/.test(container.tagName) ? "tr" : container.tagName === "TR" ? "td" : null;
+    if (!wrap) return comment;
+    const cellSource = wrap === "td" ? kid : kid.querySelector("td, th");
+    const cell = doc.createElement("td");
+    for (const attr of Array.from(cellSource?.attributes ?? [])) cell.setAttribute(attr.name, attr.value);
+    cell.appendChild(comment);
+    if (wrap === "td") return cell;
+    const row = doc.createElement("tr");
+    row.appendChild(cell);
+    return row;
+  };
+
+  for (let i = first; i <= last; i++) {
+    const kid = kids[i];
+    const role: Role = roles[i].values().next().value ?? "body"; // spacers inside the region go with the body
+    if (role === "greeting") {
+      meta.greeting = {
+        tag: greeting!.tagName.toLowerCase(),
+        style: greeting!.getAttribute("style") ?? "",
+        boldName: Boolean(greeting!.querySelector("strong, b")),
+      };
+    } else if (role === "signoff") {
+      signOffMd = toMarkdown(kid);
+      meta.signOffStyle = signOff!.getAttribute("style") ?? undefined;
+    } else if (role === "cta" && !placed.has("cta")) {
+      const template = kid.cloneNode(true) as HTMLElement;
+      const button = Array.from(template.querySelectorAll<HTMLAnchorElement>("a[href]")).find((a) => looksLikeButton(a));
+      if (button) {
+        button.setAttribute("href", "{{sc_url}}");
+        button.textContent = "{{sc_label}}";
+        meta.ctaHtml = template.outerHTML;
+      }
+    } else if (role === "body") {
+      bodyParts.push(...kidToMarkdown(kid));
+      meta.paragraphStyle ??= (kid.tagName === "P" ? kid : kid.querySelector("p"))?.getAttribute("style") ?? undefined;
+    }
+    if (placed.has(role)) kid.remove();
+    else kid.replaceWith(slotFor(kid, role));
+    placed.add(role);
+  }
+
+  // Heading / subtitle keep their element (and style); only their content becomes a slot.
+  // (isConnected: skip them if they sat inside a region that was just swapped out.)
+  let headerTagline = "";
+  let eventDates = "";
+  if (heading?.isConnected) {
+    headerTagline = clean(heading.textContent);
+    meta.tagline = { text: headerTagline, html: heading.innerHTML.trim() };
+    heading.replaceChildren(doc.createComment("sc:tagline"));
+  }
+  if (subtitle?.isConnected && meta.tagline) {
+    eventDates = clean(subtitle.textContent);
+    meta.dates = { text: eventDates, html: subtitle.innerHTML.trim() };
+    subtitle.replaceChildren(doc.createComment("sc:dates"));
+  }
+
+  if (greeting) notes.push('The greeting is now filled in for each recipient ("Dear <name>,") and left out when there is no name.');
+  if (root.querySelector("svg")) {
+    notes.push("This design contains an SVG graphic. Gmail doesn't display SVGs, so it will be missing there — use a PNG image instead.");
+  }
+  const localImages = Array.from(root.querySelectorAll("img")).filter((img) => !isHttp(img.getAttribute("src"))).length;
+  if (localImages) notes.push(`${localImages} image(s) use local or embedded paths and won't show in the email.`);
+
+  const layoutHtml = makeSkin(`<!DOCTYPE html>\n${doc.documentElement.outerHTML}`, meta);
+  if (layoutHtml.length > MAX_LAYOUT_CHARS) return null;
+
+  return {
+    headerTagline,
+    eventDates,
+    body: bodyParts.join("\n\n"),
+    signOff: signOffMd,
+    ctaButtons: buttons.map((a) => ({
+      label: clean(a.textContent),
+      url: a.getAttribute("href")!,
+      style: isOutlineButton(a) ? ("outline" as const) : ("filled" as const),
+    })),
+    socialLinks: [],
+    showAicssycLogo: false,
+    layoutHtml,
+    notes,
+  };
+}
+
+/** A body chunk as Markdown; a styled box (background/border) is kept as raw HTML so it keeps its look. */
+function kidToMarkdown(kid: HTMLElement): string[] {
+  const styled = /background|border/i.test(kid.getAttribute("style") ?? "") || kid.hasAttribute("bgcolor");
+  if (styled && /^(TABLE|DIV)$/.test(kid.tagName)) return [kid.outerHTML.replace(/\s*\n\s*/g, " ").trim()];
+  return toMarkdownBlocks(kid);
+}
+
+/** The short line right under the heading (e.g. "For All India … Congress 2026"), if there is one. */
+function subtitleAfter(heading: Element): HTMLElement | null {
+  const next = nextTextBlock(heading) as HTMLElement | null;
+  if (!next || /^H[1-6]$/.test(next.tagName) || next.querySelector("a, img, table")) return null;
+  const text = clean(next.textContent);
+  return text.length <= 120 && (looksLikeDate(text) || !/[.!?]$/.test(text)) ? next : null;
+}
+
+function commonAncestor(nodes: Node[]): Element | null {
+  let candidate: Element | null = nodes[0]?.parentElement ?? null;
+  while (candidate && !nodes.every((n) => candidate!.contains(n) && candidate !== n)) candidate = candidate.parentElement;
+  return candidate;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────

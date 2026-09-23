@@ -25,14 +25,17 @@ function EmailDetailPage() {
   });
   const [view, setView] = useState<"formatted" | "source">("formatted");
 
+  // Emails sent in an uploaded design are logged as the full HTML that was sent.
+  const bodyIsHtml = /^\s*(<!doctype html|<html[\s>])/i.test(email?.body ?? "");
   const formattedHtml = useMemo(() => {
     if (!email) return "";
+    if (bodyIsHtml) return email.body;
     return buildEmailHtml({
       templateType: email.template_type ?? "",
       markdownBody: email.body || "",
       recipientName: email.recipient_name ?? undefined,
     });
-  }, [email]);
+  }, [email, bodyIsHtml]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -95,7 +98,7 @@ function EmailDetailPage() {
                       view === "source" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
                     }`}
                   >
-                    Markdown
+                    {bodyIsHtml ? "HTML" : "Markdown"}
                   </button>
                 </div>
               </div>

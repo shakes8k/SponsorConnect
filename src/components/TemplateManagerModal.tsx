@@ -87,7 +87,8 @@ type Draft = {
   header_bg: string;
   header_image_url: string;
   footer_image_url: string;
-
+  /** Uses an uploaded email design (layout_html), which this modal leaves untouched. */
+  has_design: boolean;
 };
 
 const EMPTY: Draft = {
@@ -105,7 +106,7 @@ const EMPTY: Draft = {
   header_bg: "",
   header_image_url: "",
   footer_image_url: "",
-
+  has_design: false,
 };
 
 function toDraft(t: EmailTemplate): Draft {
@@ -125,7 +126,7 @@ function toDraft(t: EmailTemplate): Draft {
     header_bg: t.header_bg ?? "",
     header_image_url: t.header_image_url ?? "",
     footer_image_url: t.footer_image_url ?? "",
-
+    has_design: Boolean(t.layout_html),
   };
 }
 
@@ -338,6 +339,12 @@ export function TemplateManagerModal({ open, onClose, templates }: Props) {
               </div>
             </div>
 
+            {draft.has_design && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                This template uses an uploaded email design: its header, logos, colours and footer come from the
+                uploaded file, so the logo / header image / colour settings here don't change how it looks.
+              </div>
+            )}
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-700">
                 Body <span className="font-normal text-slate-400">(Markdown — use {"{{name}}"} for recipient name)</span>

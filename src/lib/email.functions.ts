@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { buildEmailHtml } from "./email-template";
+import { isSkin, renderSkin } from "./email-skin";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { classifyFailure, type EmailFailureStatus } from "./bounce-classifier";
 
@@ -29,6 +30,8 @@ const inputSchema = z.object({
   headerImageUrl: z.string().url().optional().or(z.literal("")),
   footerImageUrl: z.string().url().optional().or(z.literal("")),
   showAicssycLogo: z.boolean().optional(),
+  /** Uploaded email design (see email-skin.ts); the fields are rendered into it instead of the standard layout. */
+  layoutHtml: z.string().max(1_000_000).refine(isSkin, "Invalid email design").optional(),
 });
 
 
@@ -84,23 +87,33 @@ export const sendOutreachEmail = createServerFn({ method: "POST" })
       const personalizedSubject = applyMerge(data.subject, name, domain);
       const personalizedBody = applyMerge(data.markdownBody, name, domain);
       const personalizedSignOff = data.signOff ? applyMerge(data.signOff, name, domain) : data.signOff;
-      const html = buildEmailHtml({
-        templateType: data.templateType,
-        markdownBody: personalizedBody,
-        recipientName: name || undefined,
-        headerTagline: data.headerTagline ? applyMerge(data.headerTagline, name, domain) : data.headerTagline,
-        eventDates: data.eventDates,
-        signOff: personalizedSignOff,
-        secondaryCtaLabel: data.secondaryCtaLabel,
-        secondaryCtaUrl: data.secondaryCtaUrl || undefined,
-        ctaButtons: data.ctaButtons,
-        socialLinks: data.socialLinks,
-        logoUrls: data.logoUrls,
-        headerBg: data.headerBg,
-        headerImageUrl: data.headerImageUrl || undefined,
-        footerImageUrl: data.footerImageUrl || undefined,
-        showAicssycLogo: data.showAicssycLogo,
-      });
+      const personalizedTagline = data.headerTagline ? applyMerge(data.headerTagline, name, domain) : data.headerTagline;
+      const html = data.layoutHtml
+        ? renderSkin(data.layoutHtml, {
+            tagline: personalizedTagline ?? "",
+            dates: data.eventDates ?? "",
+            recipientName: name || undefined,
+            body: personalizedBody,
+            signOff: personalizedSignOff ?? "",
+            ctaButtons: data.ctaButtons ?? [],
+          })
+        : buildEmailHtml({
+            templateType: data.templateType,
+            markdownBody: personalizedBody,
+            recipientName: name || undefined,
+            headerTagline: personalizedTagline,
+            eventDates: data.eventDates,
+            signOff: personalizedSignOff,
+            secondaryCtaLabel: data.secondaryCtaLabel,
+            secondaryCtaUrl: data.secondaryCtaUrl || undefined,
+            ctaButtons: data.ctaButtons,
+            socialLinks: data.socialLinks,
+            logoUrls: data.logoUrls,
+            headerBg: data.headerBg,
+            headerImageUrl: data.headerImageUrl || undefined,
+            footerImageUrl: data.footerImageUrl || undefined,
+            showAicssycLogo: data.showAicssycLogo,
+          });
 
 
       const appDomain = process.env.VERCEL_URL || process.env.APP_URL?.replace(/^https?:\/\//, '') || "localhost";
@@ -116,7 +129,8 @@ export const sendOutreachEmail = createServerFn({ method: "POST" })
           recipient_name: name || null,
           recipient_email: r.email,
           subject: personalizedSubject,
-          body: personalizedBody,
+          // Emails in an uploaded design are logged as sent, so the email log can show that design.
+          body: data.layoutHtml ? html : personalizedBody,
           template_type: data.templateType,
           gmail_message_id: messageIdBare,
           status: "QUEUED" as const,

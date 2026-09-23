@@ -20,6 +20,8 @@ export type EmailTemplate = {
   header_bg: string | null;
   header_image_url: string | null;
   footer_image_url: string | null;
+  /** Uploaded email design with slot markers (see email-skin.ts); replaces the standard layout when set. */
+  layout_html: string | null;
 
   created_at: string;
   updated_at: string;
@@ -47,7 +49,7 @@ const upsertSchema = z.object({
   header_bg: z.string().max(200).optional().nullable(),
   header_image_url: z.string().url().optional().nullable().or(z.literal("")),
   footer_image_url: z.string().url().optional().nullable().or(z.literal("")),
-
+  layout_html: z.string().max(1_000_000).optional().nullable(),
 });
 
 
@@ -93,7 +95,8 @@ export const upsertEmailTemplate = createServerFn({ method: "POST" })
       header_bg: data.header_bg ?? null,
       header_image_url: data.header_image_url || null,
       footer_image_url: data.footer_image_url || null,
-
+      // Only touch the design when the caller sends it (the template manager doesn't).
+      ...(data.layout_html !== undefined ? { layout_html: data.layout_html || null } : {}),
     } as any;
 
     if (data.id) {
