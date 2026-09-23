@@ -158,7 +158,7 @@ export function AppHeader({ me }: { me: MeResponse | null; onRefresh?: () => voi
                   </div>
                 ) : (
                   <div className="font-mono text-[11px]" style={{ color: "#27ae60" }}>
-                    ▶ {me.role === "outreach" ? "AICSSYC invitations only" : "Sender ready"}
+                    ▶ {me.role === "outreach" ? "Sender ready (no lead mails)" : "Sender ready"}
                   </div>
                 )}
               </div>

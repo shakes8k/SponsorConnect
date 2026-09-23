@@ -14,7 +14,7 @@ import {
 import { buildEmailHtml, type TemplateType } from "@/lib/email-template";
 import { importEmailHtml } from "@/lib/html-import";
 import { renderSkin, skinSlots, type SkinSlot } from "@/lib/email-skin";
-import { OUTREACH_TEMPLATE_KEY } from "@/lib/roles";
+import { ADMIN_ONLY_TEMPLATE_KEYS } from "@/lib/roles";
 import { AppHeader } from "@/components/AppHeader";
 import { RichMarkdownEditor } from "@/components/RichMarkdownEditor";
 import { TemplateManagerModal } from "@/components/TemplateManagerModal";
@@ -157,17 +157,19 @@ function Composer() {
   });
 
   const isAdmin = me?.role === "admin";
-  // Outreach members send only the saved AICSSYC invitation (the server enforces this too); volunteers can't send.
+  // Admins and outreach can send and create/edit templates; only admins can delete templates or send
+  // the admin-only ones (lead interviews) — the server enforces both. Volunteers can't send.
   const isOutreach = me?.role === "outreach";
+  const canEditTemplates = isAdmin || isOutreach;
   const canSend = isAdmin || isOutreach;
   const [managerOpen, setManagerOpen] = useState(false);
 
   const allPresets = useMemo<TemplatePreset[]>(
     () =>
       customTemplates
-        .filter((t) => !isOutreach || t.key === OUTREACH_TEMPLATE_KEY)
+        .filter((t) => isAdmin || !ADMIN_ONLY_TEMPLATE_KEYS.includes(t.key))
         .map(templateToPreset),
-    [customTemplates, isOutreach],
+    [customTemplates, isAdmin],
   );
 
   const [templateType, setTemplateType] = useState<TemplateType>(allPresets[0]?.key || ("" as any));
@@ -533,7 +535,7 @@ function Composer() {
                     >
                       {allPresets.length === 0 && (
                         <div className="font-mono" style={{ padding: "0.75rem 1rem", fontSize: "0.7rem", color: "#8a8070" }}>
-                          No templates yet. Upload an HTML email{isAdmin ? ", or create one in Manage" : ""}.
+                          No templates yet.{canEditTemplates ? " Upload an HTML email, or create one in Manage." : ""}
                         </div>
                       )}
                       {allPresets.map((p, idx) => (
@@ -565,7 +567,7 @@ function Composer() {
                 )}
               </div>
 
-              {isAdmin && (
+              {canEditTemplates && (
               <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                 <input
                   ref={htmlFileRef}
@@ -590,6 +592,7 @@ function Composer() {
                   ⬆ UPLOAD HTML
                 </button>
 
+                  {isAdmin && (
                   <button
                     onClick={handleDeleteCustom}
                     disabled={!currentTemplate}
@@ -597,7 +600,7 @@ function Composer() {
                     className="font-brutalist"
                     style={{
                       padding: "0.6rem",
-                      background: currentTemplate ? "#fee2e2" : "#f1f5f9", 
+                      background: currentTemplate ? "#fee2e2" : "#f1f5f9",
                       color: currentTemplate ? "#dc2626" : "#94a3b8",
                       border: `3px solid ${INK}`,
                       cursor: currentTemplate ? "pointer" : "not-allowed",
@@ -606,6 +609,7 @@ function Composer() {
                   >
                     🗑
                   </button>
+                  )}
                   <button
                     onClick={() => setManagerOpen(true)}
                     className="font-brutalist"
@@ -654,21 +658,7 @@ function Composer() {
               </div>
             </div>
 
-            {/* ── Email fields (outreach members get the saved invitation, read-only) ── */}
-            {isOutreach ? (
-            <div className="sc-card" style={{ padding: 0, overflow: "hidden", flexShrink: 0 }}>
-              <div className="sc-card-header">EMAIL CONTENT</div>
-              <div style={{ padding: "0.875rem", display: "flex", flexDirection: "column", gap: "0.875rem" }}>
-                <Field label="Subject line">
-                  <input type="text" value={subject} readOnly className="sc-input" style={{ opacity: 0.75 }} />
-                </Field>
-                <p className="font-mono" style={{ fontSize: "0.72rem", color: "#6b6050", lineHeight: 1.5, margin: 0 }}>
-                  Outreach accounts send the <strong>AICSSYC invitation</strong> exactly as saved — add recipients and send.
-                  The preview shows what they'll get; only admins can change the content.
-                </p>
-              </div>
-            </div>
-            ) : (
+            {/* ── Email fields ── */}
             <div className="sc-card" style={{ padding: 0, overflow: "hidden", flexShrink: 0 }}>
               <div className="sc-card-header">EMAIL CONTENT</div>
               <div style={{ padding: "0.875rem", display: "flex", flexDirection: "column", gap: "0.875rem" }}>
@@ -677,10 +667,10 @@ function Composer() {
                     <div className="font-mono" style={{ fontSize: "0.72rem", color: INK, lineHeight: 1.5, overflowWrap: "anywhere" }}>
                       ⬆ Fields below were filled from <strong>{imported.fileName}</strong>
                       {imported.layoutHtml ? ", and the email keeps its design (header, logos and footer come from the file)" : ""}.
-                      Check them, then send{isAdmin ? " or save them as a template" : ""}.
+                      Check them, then send{canEditTemplates ? " or save them as a template" : ""}.
                     </div>
                     <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                      {isAdmin && (
+                      {canEditTemplates && (
                         <button type="button" onClick={saveImportAsTemplate} className="font-brutalist"
                           style={{ padding: "0.3rem 0.7rem", fontSize: "0.7rem", letterSpacing: "0.05em", background: INK, color: CREAM, border: `2px solid ${INK}`, cursor: "pointer" }}>
                           SAVE AS TEMPLATE
@@ -857,7 +847,6 @@ function Composer() {
                 )}
               </div>
             </div>
-            )}
 
             {/* ── Actions ── */}
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "0.75rem", paddingBottom: "1.5rem" }}>
@@ -918,8 +907,13 @@ function Composer() {
         </div>
       </div>
 
-      {isAdmin && (
-        <TemplateManagerModal open={managerOpen} onClose={() => setManagerOpen(false)} templates={customTemplates} />
+      {canEditTemplates && (
+        <TemplateManagerModal
+          open={managerOpen}
+          onClose={() => setManagerOpen(false)}
+          templates={customTemplates}
+          canDelete={isAdmin}
+        />
       )}
     </div>
   );

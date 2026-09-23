@@ -84,8 +84,8 @@ function AdminPage() {
               {users?.length ?? 0} member{(users?.length ?? 0) !== 1 ? "s" : ""} registered
             </p>
             <p className="font-mono text-[11px] mt-1 text-muted-foreground">
-              <strong>admin</strong> sends anything · <strong>outreach</strong> sends the AICSSYC invitation only ·{" "}
-              <strong>volunteer</strong> can't send
+              <strong>admin</strong> sends anything, manages templates · <strong>outreach</strong> sends anything except
+              lead interview mails, creates/edits/uploads templates (can't delete) · <strong>volunteer</strong> can't send
             </p>
           </div>
           <div className="relative">

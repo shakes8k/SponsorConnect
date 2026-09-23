@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { TEMPLATE_EDITORS, primaryRole, type AppRole } from "./roles";
 
 export type EmailTemplate = {
   id: string;
@@ -64,20 +65,17 @@ export const listEmailTemplates = createServerFn({ method: "GET" })
     return (data ?? []) as unknown as EmailTemplate[];
   });
 
-async function requireAdmin(context: { supabase: any; userId: string }) {
-  const { data, error } = await context.supabase.rpc("has_role", {
-    _user_id: context.userId,
-    _role: "admin",
-  });
+async function requireRole(context: { supabase: any; userId: string }, allowed: AppRole[], message: string) {
+  const { data, error } = await context.supabase.from("user_roles").select("role").eq("user_id", context.userId);
   if (error) throw new Error(error.message);
-  if (!data) throw new Error("Admin only");
+  if (!allowed.includes(primaryRole((data ?? []).map((r: any) => r.role as string)))) throw new Error(message);
 }
 
 export const upsertEmailTemplate = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((d: unknown) => upsertSchema.parse(d))
   .handler(async ({ data, context }): Promise<EmailTemplate> => {
-    await requireAdmin(context);
+    await requireRole(context, TEMPLATE_EDITORS, "Only admins and outreach members can edit templates.");
     const payload = {
       key: data.key.toLowerCase(),
       label: data.label,
@@ -89,13 +87,14 @@ export const upsertEmailTemplate = createServerFn({ method: "POST" })
       sign_off: data.sign_off ?? null,
       secondary_cta_label: data.secondary_cta_label ?? null,
       secondary_cta_url: data.secondary_cta_url || null,
-      cta_buttons: data.cta_buttons ?? null,
-      social_links: data.social_links ?? null,
       logo_urls: data.logo_urls ?? [],
       header_bg: data.header_bg ?? null,
       header_image_url: data.header_image_url || null,
       footer_image_url: data.footer_image_url || null,
-      // Only touch the design when the caller sends it (the template manager doesn't).
+      // Only touch buttons, social links and the design when the caller sends them — the template
+      // manager doesn't, and saving there must not wipe them.
+      ...(data.cta_buttons !== undefined ? { cta_buttons: data.cta_buttons } : {}),
+      ...(data.social_links !== undefined ? { social_links: data.social_links } : {}),
       ...(data.layout_html !== undefined ? { layout_html: data.layout_html || null } : {}),
     } as any;
 
@@ -122,7 +121,7 @@ export const deleteEmailTemplate = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }): Promise<{ ok: true }> => {
-    await requireAdmin(context);
+    await requireRole(context, ["admin"], "Only admins can delete templates.");
     const { error } = await context.supabase.from("email_templates").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };

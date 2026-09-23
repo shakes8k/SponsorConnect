@@ -69,6 +69,8 @@ type Props = {
   open: boolean;
   onClose: () => void;
   templates: EmailTemplate[];
+  /** Only admins may delete templates (the server enforces this too). */
+  canDelete: boolean;
 };
 
 type Draft = {
@@ -131,7 +133,7 @@ function toDraft(t: EmailTemplate): Draft {
 }
 
 
-export function TemplateManagerModal({ open, onClose, templates }: Props) {
+export function TemplateManagerModal({ open, onClose, templates, canDelete }: Props) {
   const upsert = useServerFn(upsertEmailTemplate);
   const del = useServerFn(deleteEmailTemplate);
   const qc = useQueryClient();
@@ -368,13 +370,17 @@ export function TemplateManagerModal({ open, onClose, templates }: Props) {
             </div>
 
             <div className="flex items-center justify-between pt-2">
-              <button
-                onClick={remove}
-                disabled={!draft.id || saving}
-                className="rounded-md border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Delete
-              </button>
+              {canDelete ? (
+                <button
+                  onClick={remove}
+                  disabled={!draft.id || saving}
+                  className="rounded-md border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Delete
+                </button>
+              ) : (
+                <span className="text-xs text-slate-400">Only admins can delete templates.</span>
+              )}
               <div className="flex gap-2">
                 <button
                   onClick={onClose}
