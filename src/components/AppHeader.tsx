@@ -152,9 +152,13 @@ export function AppHeader({ me }: { me: MeResponse | null; onRefresh?: () => voi
                       }} />
                     </div>
                   </>
+                ) : me.role === "volunteer" ? (
+                  <div className="font-mono text-[11px]" style={{ color: "#c0392b" }}>
+                    ✕ Sending not allowed
+                  </div>
                 ) : (
                   <div className="font-mono text-[11px]" style={{ color: "#27ae60" }}>
-                    ▶ Sender ready
+                    ▶ {me.role === "outreach" ? "AICSSYC invitations only" : "Sender ready"}
                   </div>
                 )}
               </div>
@@ -206,7 +210,7 @@ export function AppHeader({ me }: { me: MeResponse | null; onRefresh?: () => voi
                 </div>
               </div>
               <span className={me.role === "admin" ? "badge-admin" : "badge-volunteer"}>
-                {me.role === "admin" ? "ADM" : "VOL"}
+                {{ admin: "ADM", outreach: "OUT", volunteer: "VOL" }[me.role]}
               </span>
             </button>
 

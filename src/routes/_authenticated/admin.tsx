@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { AppHeader } from "@/components/AppHeader";
 import { getMe } from "@/lib/auth.functions";
 import { listUsers, setUserRole, setUserActive, type AdminUser } from "@/lib/admin.functions";
+import { ROLES } from "@/lib/roles";
 
 export const Route = createFileRoute("/_authenticated/admin")({
   component: AdminPage,
@@ -17,7 +18,7 @@ export const Route = createFileRoute("/_authenticated/admin")({
   }),
 });
 
-const ROLE_OPTIONS: Array<AdminUser["role"]> = ["admin", "volunteer"];
+const ROLE_OPTIONS: Array<AdminUser["role"]> = ROLES;
 
 function AdminPage() {
   const qc = useQueryClient();
@@ -81,6 +82,10 @@ function AdminPage() {
             <h1 className="font-brutalist text-2xl tracking-widest">USER MANAGEMENT</h1>
             <p className="font-mono text-xs mt-0.5 text-muted-foreground">
               {users?.length ?? 0} member{(users?.length ?? 0) !== 1 ? "s" : ""} registered
+            </p>
+            <p className="font-mono text-[11px] mt-1 text-muted-foreground">
+              <strong>admin</strong> sends anything · <strong>outreach</strong> sends the AICSSYC invitation only ·{" "}
+              <strong>volunteer</strong> can't send
             </p>
           </div>
           <div className="relative">

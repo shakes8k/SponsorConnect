@@ -14,6 +14,7 @@ import {
 import { buildEmailHtml, type TemplateType } from "@/lib/email-template";
 import { importEmailHtml } from "@/lib/html-import";
 import { renderSkin, skinSlots, type SkinSlot } from "@/lib/email-skin";
+import { OUTREACH_TEMPLATE_KEY } from "@/lib/roles";
 import { AppHeader } from "@/components/AppHeader";
 import { RichMarkdownEditor } from "@/components/RichMarkdownEditor";
 import { TemplateManagerModal } from "@/components/TemplateManagerModal";
@@ -156,11 +157,17 @@ function Composer() {
   });
 
   const isAdmin = me?.role === "admin";
+  // Outreach members send only the saved AICSSYC invitation (the server enforces this too); volunteers can't send.
+  const isOutreach = me?.role === "outreach";
+  const canSend = isAdmin || isOutreach;
   const [managerOpen, setManagerOpen] = useState(false);
 
   const allPresets = useMemo<TemplatePreset[]>(
-    () => customTemplates.map(templateToPreset),
-    [customTemplates],
+    () =>
+      customTemplates
+        .filter((t) => !isOutreach || t.key === OUTREACH_TEMPLATE_KEY)
+        .map(templateToPreset),
+    [customTemplates, isOutreach],
   );
 
   const [templateType, setTemplateType] = useState<TemplateType>(allPresets[0]?.key || ("" as any));
@@ -558,6 +565,7 @@ function Composer() {
                 )}
               </div>
 
+              {isAdmin && (
               <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                 <input
                   ref={htmlFileRef}
@@ -582,8 +590,6 @@ function Composer() {
                   ⬆ UPLOAD HTML
                 </button>
 
-                {isAdmin && (
-                <>
                   <button
                     onClick={handleDeleteCustom}
                     disabled={!currentTemplate}
@@ -614,10 +620,15 @@ function Composer() {
                   >
                     ⚙ MANAGE
                   </button>
-                </>
-                )}
               </div>
+              )}
             </div>
+
+            {!canSend && me && (
+              <div className="font-mono" style={{ border: `3px solid ${RUST}`, background: "#fdecea", color: INK, padding: "0.75rem", fontSize: "0.75rem", lineHeight: 1.5, flexShrink: 0 }}>
+                ✕ Your account can't send emails. Ask an admin to give you <strong>outreach</strong> access.
+              </div>
+            )}
 
             {/* ── Recipients ── */}
             <div className="sc-card" style={{ padding: 0, overflow: "hidden", flexShrink: 0 }}>
@@ -643,7 +654,21 @@ function Composer() {
               </div>
             </div>
 
-            {/* ── Email fields ── */}
+            {/* ── Email fields (outreach members get the saved invitation, read-only) ── */}
+            {isOutreach ? (
+            <div className="sc-card" style={{ padding: 0, overflow: "hidden", flexShrink: 0 }}>
+              <div className="sc-card-header">EMAIL CONTENT</div>
+              <div style={{ padding: "0.875rem", display: "flex", flexDirection: "column", gap: "0.875rem" }}>
+                <Field label="Subject line">
+                  <input type="text" value={subject} readOnly className="sc-input" style={{ opacity: 0.75 }} />
+                </Field>
+                <p className="font-mono" style={{ fontSize: "0.72rem", color: "#6b6050", lineHeight: 1.5, margin: 0 }}>
+                  Outreach accounts send the <strong>AICSSYC invitation</strong> exactly as saved — add recipients and send.
+                  The preview shows what they'll get; only admins can change the content.
+                </p>
+              </div>
+            </div>
+            ) : (
             <div className="sc-card" style={{ padding: 0, overflow: "hidden", flexShrink: 0 }}>
               <div className="sc-card-header">EMAIL CONTENT</div>
               <div style={{ padding: "0.875rem", display: "flex", flexDirection: "column", gap: "0.875rem" }}>
@@ -832,10 +857,17 @@ function Composer() {
                 )}
               </div>
             </div>
+            )}
 
             {/* ── Actions ── */}
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "0.75rem", paddingBottom: "1.5rem" }}>
-              <button onClick={handleSend} disabled={sending} className="btn-stamp" style={{ fontSize: "0.9rem" }}>
+              <button
+                onClick={handleSend}
+                disabled={sending || !canSend}
+                title={canSend ? undefined : "Your account can't send emails"}
+                className="btn-stamp"
+                style={{ fontSize: "0.9rem" }}
+              >
                 {sending ? (
                   <><svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> SENDING…</>
                 ) : (

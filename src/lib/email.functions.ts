@@ -4,6 +4,7 @@ import { buildEmailHtml } from "./email-template";
 import { isSkin, renderSkin } from "./email-skin";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { classifyFailure, type EmailFailureStatus } from "./bounce-classifier";
+import { OUTREACH_TEMPLATE_KEY, primaryRole } from "./roles";
 
 export type { MailAttachment } from "./email-transport.server";
 
@@ -45,10 +46,40 @@ export type SendEmailResult = {
   results: Array<{ to: string; ok: boolean; status: string; error?: string; messageId?: string }>;
 };
 
+/**
+ * What an outreach member sends: the saved AICSSYC invitation, exactly as stored — only the
+ * recipients come from the request, so the content can't be changed from the browser.
+ */
+async function savedInvitation(supabase: any, recipients: SendEmailInput["recipients"]): Promise<SendEmailInput> {
+  const { data: t, error } = await supabase
+    .from("email_templates")
+    .select("*")
+    .eq("key", OUTREACH_TEMPLATE_KEY)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!t) throw new Error("The AICSSYC invitation template is missing. Ask an admin to restore it.");
+  return inputSchema.parse({
+    templateType: OUTREACH_TEMPLATE_KEY,
+    recipients,
+    subject: t.subject,
+    markdownBody: t.body_md,
+    headerTagline: t.header_tagline ?? undefined,
+    eventDates: t.event_dates ?? undefined,
+    signOff: t.sign_off ?? undefined,
+    ctaButtons: t.cta_buttons ?? undefined,
+    socialLinks: t.social_links ?? undefined,
+    logoUrls: t.logo_urls ?? [],
+    headerBg: t.header_bg ?? undefined,
+    headerImageUrl: t.header_image_url ?? undefined,
+    footerImageUrl: t.footer_image_url ?? undefined,
+    layoutHtml: t.layout_html ?? undefined,
+  });
+}
+
 export const sendOutreachEmail = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => inputSchema.parse(d))
-  .handler(async ({ data, context }): Promise<SendEmailResult> => {
+  .handler(async ({ data: request, context }): Promise<SendEmailResult> => {
     const { supabase, userId } = context;
 
     const [profRes, rolesRes] = await Promise.all([
@@ -58,10 +89,12 @@ export const sendOutreachEmail = createServerFn({ method: "POST" })
 
     if (!profRes.data?.is_active) throw new Error("Your account is disabled. Contact an admin.");
 
-    const roles = (rolesRes.data ?? []).map((r: any) => r.role as string);
-    const role = roles.includes("admin") ? "admin" : "volunteer";
-    void role;
-    // Daily send cap removed — no per-user limit.
+    const role = primaryRole((rolesRes.data ?? []).map((r: any) => r.role as string));
+    if (role === "volunteer") {
+      throw new Error("Volunteers can't send emails. Ask an admin to give you outreach access.");
+    }
+    // No per-user daily limit (Gmail's own sending limit still applies).
+    const data = role === "outreach" ? await savedInvitation(supabase, request.recipients) : request;
 
     const transport = "smtp_gmail" as const;
     const senderEmail = process.env.GMAIL_USER;

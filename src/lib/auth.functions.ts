@@ -1,7 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { primaryRole, type AppRole } from "./roles";
 
-export type AppRole = "admin" | "volunteer";
+export type { AppRole };
 
 export type MeResponse = {
   id: string;
@@ -16,8 +17,10 @@ export type MeResponse = {
   daily_limit: number | null;
 };
 
+// Display only — no per-user cap is enforced when sending. (Volunteers can't send at all.)
 const LIMITS: Record<AppRole, number | null> = {
-  volunteer: 50,
+  volunteer: null,
+  outreach: null,
   admin: null,
 };
 
@@ -36,8 +39,7 @@ export const getMe = createServerFn({ method: "GET" })
     // Update last_login (best-effort)
     await supabase.from("profiles").update({ last_login: new Date().toISOString() }).eq("id", userId);
 
-    const roles = (rolesRes.data ?? []).map((r: any) => r.role as AppRole);
-    const role: AppRole = roles.includes("admin") ? "admin" : "volunteer";
+    const role = primaryRole((rolesRes.data ?? []).map((r: any) => r.role as string));
 
     const profile = profileRes.data;
     return {

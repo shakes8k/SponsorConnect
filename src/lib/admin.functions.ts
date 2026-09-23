@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { ROLES, primaryRole, type AppRole } from "./roles";
 
 export type AdminUser = {
   id: string;
@@ -8,7 +9,7 @@ export type AdminUser = {
   email: string;
   avatar_url: string | null;
   is_active: boolean;
-  role: "admin" | "volunteer";
+  role: AppRole;
   created_at: string;
   last_login: string | null;
   delivered_count: number;
@@ -57,7 +58,7 @@ export const listUsers = createServerFn({ method: "GET" })
 
     return (profRes.data ?? []).map((p: any) => {
       const rs = rolesByUser.get(p.id) ?? [];
-      const role = rs.includes("admin") ? "admin" : "volunteer";
+      const role = primaryRole(rs);
       const c = countsByUser.get(p.id) ?? { delivered: 0, failed: 0 };
       return {
         id: p.id,
@@ -78,7 +79,7 @@ export const listUsers = createServerFn({ method: "GET" })
 
 const setRoleSchema = z.object({
   userId: z.string().uuid(),
-  role: z.enum(["admin", "volunteer"]),
+  role: z.enum(ROLES as [AppRole, ...AppRole[]]),
 });
 
 export const setUserRole = createServerFn({ method: "POST" })

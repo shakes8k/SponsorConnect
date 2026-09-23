@@ -227,7 +227,7 @@ export type Database = {
       today_send_count: { Args: { _user_id: string }; Returns: number }
     }
     Enums: {
-      app_role: "admin" | "volunteer"
+      app_role: "admin" | "outreach" | "volunteer"
       email_status:
         | "QUEUED"
         | "SENDING"
@@ -367,7 +367,7 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
-      app_role: ["admin", "volunteer"],
+      app_role: ["admin", "outreach", "volunteer"],
       email_status: [
         "QUEUED",
         "SENDING",
