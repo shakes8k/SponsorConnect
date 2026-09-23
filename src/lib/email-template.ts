@@ -9,7 +9,9 @@ const BASE_URL =
     : typeof window !== "undefined"
       ? window.location.origin
       : "http://localhost:8080");
-const AICSSYC_LOGO = `${BASE_URL}/__l5e/assets-v1/9a130604-9ee4-4773-893a-f387e16da8fa/aicssyc-logo.png`;
+// Black logo with a white outline: shows on the white body in light mode and on dark backgrounds in dark mode.
+// (The old asset was white artwork, invisible on the white body.)
+const AICSSYC_LOGO = `${BASE_URL}/email/aicssyc-logo-halo.png`;
 const IEEE_CS_LOGO = `${BASE_URL}/__l5e/assets-v1/bc5fc91c-5700-4a7a-aced-4c00be793bc4/ieee-cs-logo.jpeg`;
 const FOOTER_IMAGE = `${BASE_URL}/__l5e/assets-v1/996f6ae7-67d5-454a-bbe7-b88f6e1dda40/ieee-cs-footer.png`;
 const SRM_LOGO = `${BASE_URL}${srmLogoAsset.url}`;
@@ -215,6 +217,8 @@ export function buildEmailHtml({
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light only" />
+<meta name="supported-color-schemes" content="light only" />
 <title>${escapeHtml(tagline || "AICSSYC 2026")}</title>
 </head>
 <body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1a1a2e;">
