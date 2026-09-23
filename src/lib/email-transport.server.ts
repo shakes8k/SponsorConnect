@@ -329,8 +329,9 @@ async function createNodeSmtpMailer(user: string, password: string): Promise<Mai
 }
 
 export async function createMailer(): Promise<Mailer> {
-  const user = process.env.GMAIL_USER;
-  const password = process.env.GMAIL_APP_PASSWORD;
+  const user = process.env.GMAIL_USER?.trim();
+  // Google displays app passwords as "abcd efgh ijkl mnop"; the real password has no spaces.
+  const password = process.env.GMAIL_APP_PASSWORD?.replace(/\s+/g, "");
   if (!user || !password) throw new Error("SMTP not configured (GMAIL_USER/GMAIL_APP_PASSWORD).");
   return createCloudflareSmtpMailer(user, password);
 }

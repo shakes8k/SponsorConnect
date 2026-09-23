@@ -32,8 +32,8 @@ export const Route = createFileRoute("/api/public/hooks/bounce-monitor")({
         g[RUN_MUTEX_KEY] = true;
 
         try {
-          const user = process.env.GMAIL_USER;
-          const password = process.env.GMAIL_APP_PASSWORD;
+          const user = process.env.GMAIL_USER?.trim();
+          const password = process.env.GMAIL_APP_PASSWORD?.replace(/\s+/g, "");
           if (!user || !password) return json({ error: "GMAIL_USER/GMAIL_APP_PASSWORD missing" }, 500);
 
           console.log("[IMAP] connecting to imap.gmail.com...");
