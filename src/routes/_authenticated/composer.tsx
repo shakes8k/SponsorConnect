@@ -484,13 +484,14 @@ function Composer() {
             style={{ overflowY: "auto", padding: "1.25rem", gap: "1rem", borderRight: `3px solid ${INK}` }}
           >
 
-            <div style={{ display: "flex", gap: "0.5rem", alignItems: "stretch" }}>
-              <div style={{ flex: 1, position: "relative" }}>
+            {/* ── Template picker, then its actions on their own row (they don't fit beside it) ── */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", flexShrink: 0 }}>
+              <div style={{ position: "relative" }}>
                 <button
                   onClick={() => setDropdownOpen(!dropdownOpen)}
                   className="font-brutalist"
                   style={{
-                    width: "100%", height: "100%",
+                    width: "100%",
                     display: "flex", alignItems: "center", justifyContent: "space-between",
                     padding: "0.6rem 1rem",
                     background: INK, color: CREAM,
@@ -523,6 +524,11 @@ function Composer() {
                         maxHeight: "260px", overflowY: "auto",
                       }}
                     >
+                      {allPresets.length === 0 && (
+                        <div className="font-mono" style={{ padding: "0.75rem 1rem", fontSize: "0.7rem", color: "#8a8070" }}>
+                          No templates yet. Upload an HTML email{isAdmin ? ", or create one in Manage" : ""}.
+                        </div>
+                      )}
                       {allPresets.map((p, idx) => (
                         <button
                           key={p.key}
@@ -552,31 +558,32 @@ function Composer() {
                 )}
               </div>
 
-              <input
-                ref={htmlFileRef}
-                type="file"
-                accept=".html,.htm,text/html"
-                onChange={handleHtmlFile}
-                style={{ display: "none" }}
-              />
-              <button
-                onClick={() => htmlFileRef.current?.click()}
-                title="Fill the fields below from an .html email"
-                className="font-brutalist"
-                style={{
-                  padding: "0.6rem 0.9rem",
-                  background: PAPER, color: INK,
-                  border: `3px solid ${INK}`,
-                  fontSize: "0.75rem", letterSpacing: "0.08em",
-                  cursor: "pointer", whiteSpace: "nowrap",
-                  flexShrink: 0,
-                }}
-              >
-                ⬆ UPLOAD HTML
-              </button>
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                <input
+                  ref={htmlFileRef}
+                  type="file"
+                  accept=".html,.htm,text/html"
+                  onChange={handleHtmlFile}
+                  style={{ display: "none" }}
+                />
+                <button
+                  onClick={() => htmlFileRef.current?.click()}
+                  title="Fill the fields below from an .html email"
+                  className="font-brutalist"
+                  style={{
+                    flex: "1 1 auto",
+                    padding: "0.6rem 0.9rem",
+                    background: PAPER, color: INK,
+                    border: `3px solid ${INK}`,
+                    fontSize: "0.75rem", letterSpacing: "0.08em",
+                    cursor: "pointer", whiteSpace: "nowrap",
+                  }}
+                >
+                  ⬆ UPLOAD HTML
+                </button>
 
-              {isAdmin && (
-                <div style={{ display: "flex", gap: "0.5rem" }}>
+                {isAdmin && (
+                <>
                   <button
                     onClick={handleDeleteCustom}
                     disabled={!currentTemplate}
@@ -607,8 +614,9 @@ function Composer() {
                   >
                     ⚙ MANAGE
                   </button>
-                </div>
-              )}
+                </>
+                )}
+              </div>
             </div>
 
             {/* ── Recipients ── */}
