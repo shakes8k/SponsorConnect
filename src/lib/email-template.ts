@@ -11,7 +11,7 @@ const BASE_URL =
       : "http://localhost:8080");
 // Black logo with a white outline: shows on the white body in light mode and on dark backgrounds in dark mode.
 // (The old asset was white artwork, invisible on the white body.)
-const AICSSYC_LOGO = `${BASE_URL}/email/aicssyc-logo-halo.png`;
+const AICSSYC_LOGO = `${BASE_URL}/email/aicssyc-logo-outline.png`;
 const IEEE_CS_LOGO = `${BASE_URL}/__l5e/assets-v1/bc5fc91c-5700-4a7a-aced-4c00be793bc4/ieee-cs-logo.jpeg`;
 const FOOTER_IMAGE = `${BASE_URL}/__l5e/assets-v1/996f6ae7-67d5-454a-bbe7-b88f6e1dda40/ieee-cs-footer.png`;
 const SRM_LOGO = `${BASE_URL}${srmLogoAsset.url}`;
