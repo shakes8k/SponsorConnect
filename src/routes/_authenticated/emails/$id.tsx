@@ -6,7 +6,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { getMe } from "@/lib/auth.functions";
 import { getEmailById } from "@/lib/email-logs.functions";
 import { humanStatusLabel } from "@/lib/bounce-classifier";
-import { buildEmailHtml, isHtmlDocument } from "@/lib/email-template";
+import { buildEmailHtml } from "@/lib/email-template";
 
 export const Route = createFileRoute("/_authenticated/emails/$id")({
   component: EmailDetailPage,
@@ -25,10 +25,8 @@ function EmailDetailPage() {
   });
   const [view, setView] = useState<"formatted" | "source">("formatted");
 
-  const bodyIsHtml = isHtmlDocument(email?.body ?? "");
   const formattedHtml = useMemo(() => {
     if (!email) return "";
-    if (isHtmlDocument(email.body ?? "")) return email.body;
     return buildEmailHtml({
       templateType: email.template_type ?? "",
       markdownBody: email.body || "",
@@ -97,7 +95,7 @@ function EmailDetailPage() {
                       view === "source" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
                     }`}
                   >
-                    {bodyIsHtml ? "HTML" : "Markdown"}
+                    Markdown
                   </button>
                 </div>
               </div>

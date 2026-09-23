@@ -20,8 +20,6 @@ export type EmailTemplate = {
   header_bg: string | null;
   header_image_url: string | null;
   footer_image_url: string | null;
-  /** Uploaded full-HTML template; when set it is sent as-is instead of the Markdown layout. */
-  body_html: string | null;
 
   created_at: string;
   updated_at: string;
@@ -37,9 +35,7 @@ const upsertSchema = z.object({
   label: z.string().min(1).max(120),
   description: z.string().max(500).optional().nullable(),
   subject: z.string().min(1).max(300),
-  // Empty for uploaded HTML templates.
-  body_md: z.string(),
-  body_html: z.string().max(1_000_000).optional().nullable(),
+  body_md: z.string().min(1),
   header_tagline: z.string().max(200).optional().nullable(),
   event_dates: z.string().max(120).optional().nullable(),
   sign_off: z.string().max(2000).optional().nullable(),
@@ -97,8 +93,7 @@ export const upsertEmailTemplate = createServerFn({ method: "POST" })
       header_bg: data.header_bg ?? null,
       header_image_url: data.header_image_url || null,
       footer_image_url: data.footer_image_url || null,
-      // Only touch the uploaded HTML when the caller sends it (the template manager doesn't).
-      ...(data.body_html !== undefined ? { body_html: data.body_html || null } : {}),
+
     } as any;
 
     if (data.id) {

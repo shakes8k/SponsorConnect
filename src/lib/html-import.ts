@@ -1,0 +1,429 @@
+// Turns an uploaded HTML email into the Composer's fields (subject, tagline, body, buttons, …),
+// so it is sent through the normal branded layout. Browser-only: uses DOMParser.
+
+export type ImportedEmail = {
+  subject?: string;
+  headerTagline: string;
+  eventDates: string;
+  /** Markdown */
+  body: string;
+  /** Markdown */
+  signOff: string;
+  ctaButtons: Array<{ label: string; url: string; style?: "filled" | "outline" }>;
+  socialLinks: Array<{ platform: string; url: string }>;
+  showAicssycLogo: boolean;
+  headerImageUrl?: string;
+  footerImageUrl?: string;
+  logoUrls?: string[];
+  /** Human-readable notes about what was dropped or guessed. */
+  notes: string[];
+};
+
+const SOCIAL_PLATFORMS: Array<[RegExp, string]> = [
+  [/linkedin\.com/i, "LinkedIn"],
+  [/instagram\.com/i, "Instagram"],
+  [/(twitter\.com|\/\/(www\.)?x\.com)/i, "X"],
+  [/(youtube\.com|youtu\.be)/i, "YouTube"],
+  [/(facebook\.com|fb\.com)/i, "Facebook"],
+];
+
+// Images the layout adds by itself (identified by file name, since the host differs per deployment).
+const DEFAULT_HEADER_LOGOS = ["ieee-cs-logo.jpeg", "srm-logo.png"];
+const DEFAULT_FOOTER_IMAGE = "ieee-cs-footer.png";
+
+const GREETING = /^(dear|hi|hello|hey)\b[^\n]{0,60}[,!:]$/i;
+const SIGN_OFF_START = /^(warm(est)?\s+regards|kind\s+regards|best\s+regards|best\s+wishes|regards|sincerely|yours\s+(truly|sincerely|faithfully)|thanks|thank\s+you|many\s+thanks|cheers|best)\b/i;
+const BOILERPLATE = /unsubscribe|©|&copy;|all rights reserved|view (this email )?in (your )?browser/i;
+
+const clean = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
+/** Markdown line → plain text, for pattern checks. */
+const plain = (md: string) => md.replace(/\\([\\`*_[\]])/g, "$1").replace(/[*_]+/g, "").trim();
+const isHttp = (url: string | null | undefined): url is string => /^https?:\/\//i.test(url ?? "");
+const fileName = (url: string) => url.split(/[?#]/)[0].split("/").pop() ?? "";
+
+export function importEmailHtml(html: string): ImportedEmail {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const subject = clean(doc.title) || undefined;
+  doc.querySelectorAll("script, style, noscript, template, title, meta, link").forEach((n) => n.remove());
+  // Hidden preheader text
+  doc.querySelectorAll<HTMLElement>("[style]").forEach((el) => {
+    if (/display\s*:\s*none|max-height\s*:\s*0|mso-hide\s*:\s*all/i.test(el.getAttribute("style") ?? "")) el.remove();
+  });
+
+  // This app's own layout puts the tagline (not the subject) in <title>.
+  if (doc.querySelector(".md-body")) return { subject: undefined, ...importOwnLayout(doc) };
+  return { subject, ...importGenericEmail(doc) };
+}
+
+/** HTML produced by this app's own layout (e.g. via "Copy HTML"): every field maps back exactly. */
+function importOwnLayout(doc: Document): Omit<ImportedEmail, "subject"> {
+  const notes: string[] = [];
+  const [bodyEl, signOffEl] = Array.from(doc.querySelectorAll<HTMLElement>(".md-body"));
+
+  const h1 = doc.querySelector("h1");
+  const datesEl = h1?.nextElementSibling?.tagName === "P" ? h1.nextElementSibling : null;
+
+  const images = Array.from(doc.querySelectorAll<HTMLImageElement>("img"));
+  const bodyStart = bodyEl ? images.filter((img) => precedes(img, bodyEl)) : [];
+  const banner = bodyStart.find((img) => img.getAttribute("width") === "600");
+  const headerLogos = bodyStart.filter((img) => img !== banner).map((img) => img.getAttribute("src") ?? "").filter(isHttp);
+  const logosAreDefault =
+    headerLogos.length === DEFAULT_HEADER_LOGOS.length && headerLogos.every((src, i) => fileName(src) === DEFAULT_HEADER_LOGOS[i]);
+
+  const footerImg = images.find((img) => img.closest('a[href*="ieeecssrm"]') && img.getAttribute("width") === "600");
+  const footerSrc = footerImg?.getAttribute("src");
+
+  const ctaButtons = Array.from(doc.querySelectorAll<HTMLAnchorElement>('a[target="_blank"]'))
+    .filter((a) => /display\s*:\s*block/i.test(a.getAttribute("style") ?? "") && clean(a.textContent))
+    .map((a) => ({
+      label: clean(a.textContent),
+      url: a.getAttribute("href") ?? "",
+      style: (/background\s*:\s*#fff(fff)?\b/i.test(a.getAttribute("style") ?? "") ? "outline" : "filled") as "filled" | "outline",
+    }));
+
+  const socialLinks = Array.from(doc.querySelectorAll<HTMLImageElement>('a > img[src*="icons8.com"]')).map((img) => ({
+    platform: img.getAttribute("alt") || "Website",
+    url: img.parentElement?.getAttribute("href") ?? "",
+  }));
+
+  return {
+    headerTagline: clean(h1?.textContent),
+    eventDates: clean(datesEl?.textContent),
+    body: bodyEl ? toMarkdown(bodyEl) : "",
+    signOff: signOffEl ? toMarkdown(signOffEl) : "",
+    ctaButtons,
+    socialLinks,
+    showAicssycLogo: Boolean(doc.querySelector('img[alt="AICSSYC Logo"]')),
+    headerImageUrl: isHttp(banner?.getAttribute("src")) ? banner!.getAttribute("src")! : undefined,
+    footerImageUrl: isHttp(footerSrc) && fileName(footerSrc) !== DEFAULT_FOOTER_IMAGE ? footerSrc : undefined,
+    logoUrls: banner || logosAreDefault || headerLogos.length === 0 ? undefined : headerLogos.slice(0, 6),
+    notes,
+  };
+}
+
+/** Any other email HTML: pull out the recognisable pieces, convert the rest of the text to Markdown. */
+function importGenericEmail(doc: Document): Omit<ImportedEmail, "subject"> {
+  const notes: string[] = [];
+  const root = doc.body;
+
+  // Social links (usually icon-only)
+  const socialLinks: ImportedEmail["socialLinks"] = [];
+  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((a) => {
+    const href = a.getAttribute("href") ?? "";
+    const platform = SOCIAL_PLATFORMS.find(([re]) => re.test(href))?.[1];
+    if (!platform || BOILERPLATE.test(clean(a.textContent))) return;
+    if (!socialLinks.some((s) => s.platform === platform)) socialLinks.push({ platform, url: href });
+    // Icon links go; a link written into a sentence stays in the text.
+    if (clean(a.textContent).length <= 15) a.remove();
+  });
+
+  // Button-styled links
+  const ctaButtons: ImportedEmail["ctaButtons"] = [];
+  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((a) => {
+    const href = a.getAttribute("href") ?? "";
+    const label = clean(a.textContent);
+    if (!isHttp(href) || !label || !looksLikeButton(a)) return;
+    ctaButtons.push({ label, url: href, style: isOutlineButton(a) ? "outline" : "filled" });
+    a.remove();
+  });
+
+  // Wide images at the very top / bottom become the header / footer banners
+  // ("bottom" = after the last real text; footer boilerplate like "© … Unsubscribe" doesn't count).
+  const textNodes = Array.from(walkText(root)).filter(
+    (t) => clean(t.textContent) && !BOILERPLATE.test(clean(t.parentElement?.closest("p, td, div")?.textContent)),
+  );
+  const firstText = textNodes[0];
+  const lastText = textNodes.at(-1);
+  const images = Array.from(root.querySelectorAll<HTMLImageElement>("img"));
+  let headerImageUrl: string | undefined;
+  let footerImageUrl: string | undefined;
+  const logoUrls: string[] = [];
+  let lightLogos = 0;
+  for (const img of images) {
+    const src = img.getAttribute("src");
+    if (!isHttp(src)) {
+      notes.push(`Skipped an image with a local or embedded path (${(src ?? "").slice(0, 40)}…).`);
+      img.remove();
+      continue;
+    }
+    const beforeText = !firstText || precedes(img, firstText);
+    const afterText = lastText ? precedes(lastText, img) : false;
+    if (beforeText && isWide(img) && !headerImageUrl) {
+      headerImageUrl = src;
+      img.remove();
+    } else if (beforeText && !isWide(img)) {
+      // The layout's header is dark: logos drawn for a light background would be invisible there.
+      if (isLightColor(backgroundBehind(img))) lightLogos++;
+      else if (logoUrls.length < 6) logoUrls.push(src);
+      img.remove();
+    } else if (afterText && isWide(img)) {
+      footerImageUrl = src;
+      img.remove();
+    }
+  }
+
+  // First heading (before any paragraph text) is the tagline; a short date-like line after it is the dates.
+  let headerTagline = "";
+  let eventDates = "";
+  const heading = root.querySelector("h1") ?? root.querySelector("h2");
+  if (heading && clean(heading.textContent) && (!firstParagraphBefore(root, heading))) {
+    headerTagline = clean(heading.textContent);
+    const next = nextTextBlock(heading);
+    if (next && clean(next.textContent).length <= 60 && looksLikeDate(clean(next.textContent))) {
+      eventDates = clean(next.textContent);
+      next.remove();
+    }
+    heading.remove();
+  }
+
+  if (lightLogos > 0) {
+    notes.push(
+      `Kept the layout's own header logos: the file's ${lightLogos} logo(s) are made for a light background and wouldn't show on the dark header.`,
+    );
+  }
+
+  const blocks = toMarkdownBlocks(root);
+
+  // The layout greets each recipient by name, so drop a hard-coded greeting line (usually in the first few paragraphs).
+  const greetIdx = blocks.slice(0, 4).findIndex((b) => GREETING.test(plain(b.split("\n")[0])));
+  if (greetIdx >= 0) {
+    const lines = blocks[greetIdx].split("\n");
+    notes.push(`Removed the greeting "${plain(lines[0])}" — the layout adds "Dear <name>," for each recipient.`);
+    const rest = lines.slice(1).join("\n").trim();
+    if (rest) blocks[greetIdx] = rest;
+    else blocks.splice(greetIdx, 1);
+  }
+
+  // Everything from the last short "Regards," / "Thanks," line onwards is the sign-off (minus footer boilerplate).
+  let signOffBlocks: string[] = [];
+  const signIdx = findLastIndex(blocks, (b) => {
+    const line = plain(b.split("\n")[0]);
+    return line.length <= 40 && SIGN_OFF_START.test(line);
+  });
+  if (signIdx >= 0) signOffBlocks = blocks.splice(signIdx);
+  const trimBoilerplate = (list: string[]) => list.filter((b) => !BOILERPLATE.test(b));
+
+  return {
+    headerTagline,
+    eventDates,
+    body: trimBoilerplate(blocks).join("\n\n"),
+    signOff: trimBoilerplate(signOffBlocks).join("\n\n"),
+    ctaButtons: ctaButtons.slice(0, 4),
+    socialLinks,
+    showAicssycLogo: false,
+    headerImageUrl,
+    footerImageUrl,
+    logoUrls: logoUrls.length ? logoUrls : undefined,
+    notes,
+  };
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────
+
+function precedes(a: Node, b: Node): boolean {
+  return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+function* walkText(root: Node): Generator<Text> {
+  const walker = root.ownerDocument!.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) yield n as Text;
+}
+
+function firstParagraphBefore(root: HTMLElement, el: Element): boolean {
+  const p = Array.from(root.querySelectorAll("p")).find((x) => clean(x.textContent));
+  return Boolean(p && precedes(p, el));
+}
+
+function nextTextBlock(el: Element): Element | null {
+  for (let n = el.nextElementSibling; n; n = n.nextElementSibling) if (clean(n.textContent)) return n;
+  return null;
+}
+
+function looksLikeDate(s: string): boolean {
+  return /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b20\d\d\b|\d{1,2}(st|nd|rd|th)\b|\d{1,2}[/-]\d{1,2}/i.test(s);
+}
+
+function styleOf(el: Element | null): string {
+  return (el?.getAttribute("style") ?? "").toLowerCase();
+}
+
+function hasFill(style: string, el: Element | null): boolean {
+  const bg = style.match(/background(-color)?\s*:\s*([^;]+)/)?.[2]?.trim() ?? el?.getAttribute("bgcolor") ?? "";
+  return Boolean(bg) && !/^(none|transparent|#fff(fff)?|white|rgba?\(255,\s*255,\s*255)/i.test(bg);
+}
+
+function looksLikeButton(a: HTMLAnchorElement): boolean {
+  const style = styleOf(a);
+  if (/\b(btn|button|cta)\b/i.test(a.className) || a.getAttribute("role") === "button") return true;
+  if (hasFill(style, a) && /padding/.test(style)) return true;
+  if (/border\s*:\s*[1-9]/.test(style) && /padding/.test(style) && /display\s*:\s*(inline-)?block/.test(style)) return true;
+  // Classic "bulletproof" button: a filled table cell containing just this link.
+  const cell = a.closest("td");
+  return Boolean(cell && hasFill(styleOf(cell), cell) && clean(cell.textContent) === clean(a.textContent));
+}
+
+function isOutlineButton(a: HTMLAnchorElement): boolean {
+  const style = styleOf(a);
+  return !hasFill(style, a) && /border\s*:\s*[1-9]/.test(style);
+}
+
+/** The background colour an element sits on (emails default to white). */
+function backgroundBehind(el: Element): string {
+  for (let n = el.parentElement; n; n = n.parentElement) {
+    const bg = styleOf(n).match(/background(-color)?\s*:\s*([^;]+)/)?.[2]?.trim() ?? n.getAttribute("bgcolor");
+    if (bg && !/^(none|transparent|inherit|initial)\b/i.test(bg)) return bg;
+  }
+  return "#ffffff";
+}
+
+/** Unknown colours count as light, so we'd rather keep the layout's own logos than show invisible ones. */
+function isLightColor(color: string): boolean {
+  const hex = color.match(/#([0-9a-f]{6}|[0-9a-f]{3})\b/i)?.[1];
+  const rgb = color.match(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i);
+  let r: number, g: number, b: number;
+  if (hex) {
+    const full = hex.length === 3 ? hex.replace(/./g, "$&$&") : hex;
+    [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+  } else if (rgb) {
+    [r, g, b] = [rgb[1], rgb[2], rgb[3]].map(Number);
+  } else {
+    return !/\b(black|navy|maroon|purple|green|teal)\b/i.test(color);
+  }
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6;
+}
+
+/** Width in px from the width attribute or an inline style; 0 if unknown. */
+function imageWidth(img: HTMLImageElement): number {
+  return Number(img.getAttribute("width")) || Number(styleOf(img).match(/(?:^|;)\s*width\s*:\s*(\d+)px/)?.[1]) || 0;
+}
+
+function isWide(img: HTMLImageElement): boolean {
+  return imageWidth(img) >= 400 || /(?:^|;)\s*width\s*:\s*100%/.test(styleOf(img));
+}
+
+function findLastIndex<T>(list: T[], pred: (x: T) => boolean): number {
+  for (let i = list.length - 1; i >= 0; i--) if (pred(list[i])) return i;
+  return -1;
+}
+
+// ── HTML → Markdown ─────────────────────────────────────────────────────
+
+const BLOCK_TAGS = new Set([
+  "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "BODY", "CENTER", "DIV", "FOOTER", "HEADER", "MAIN",
+  "P", "SECTION", "TABLE", "TBODY", "THEAD", "TFOOT", "TR", "TD", "TH", "H1", "H2", "H3", "H4", "H5", "H6",
+  "UL", "OL", "LI", "PRE", "HR",
+]);
+
+function toMarkdown(el: Element): string {
+  return toMarkdownBlocks(el).join("\n\n");
+}
+
+function toMarkdownBlocks(root: Element): string[] {
+  const blocks: string[] = [];
+  let current = "";
+  const flush = () => {
+    const text = current
+      .split("\n")
+      .map((line) => line.replace(/[ \t]+/g, " ").trim())
+      .join("\n")
+      .replace(/\n{2,}/g, "\n")
+      .trim();
+    if (text) blocks.push(text);
+    current = "";
+  };
+
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      current += escapeMarkdown((node.textContent ?? "").replace(/\s+/g, " "));
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as Element;
+    const tag = el.tagName;
+
+    if (tag === "BR") {
+      current += "\n";
+    } else if (/^H[1-6]$/.test(tag)) {
+      flush();
+      const text = inlineMarkdown(el).trim();
+      if (text) blocks.push(`### ${text}`);
+    } else if (tag === "UL" || tag === "OL") {
+      flush();
+      const items = Array.from(el.children)
+        .filter((c) => c.tagName === "LI")
+        .map((li, i) => `${tag === "OL" ? `${i + 1}.` : "-"} ${inlineMarkdown(li).replace(/\s*\n\s*/g, " ").trim()}`)
+        .filter((line) => line.replace(/^(-|\d+\.)\s*/, ""));
+      if (items.length) blocks.push(items.join("\n"));
+    } else if (tag === "BLOCKQUOTE") {
+      flush();
+      const inner = toMarkdownBlocks(el).join("\n\n");
+      if (inner) blocks.push(inner.split("\n").map((l) => `> ${l}`).join("\n"));
+    } else if (tag === "HR") {
+      flush();
+    } else if (BLOCK_TAGS.has(tag)) {
+      flush();
+      el.childNodes.forEach(walk);
+      flush();
+    } else {
+      current += inlineMarkdown(el);
+    }
+  };
+
+  root.childNodes.forEach(walk);
+  flush();
+  return blocks;
+}
+
+function inlineMarkdown(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return escapeMarkdown((node.textContent ?? "").replace(/\s+/g, " "));
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+  const el = node as Element;
+  const inner = () => Array.from(el.childNodes).map(inlineMarkdown).join("");
+
+  switch (el.tagName) {
+    case "BR":
+      return "\n";
+    case "IMG": {
+      const src = el.getAttribute("src");
+      if (!isHttp(src)) return "";
+      // A raw <img> (the Markdown renderer lets it through) keeps the original size; ![](…) can't,
+      // and a full-resolution logo would stretch the whole email.
+      const width = Math.min(560, imageWidth(el as HTMLImageElement) || 200);
+      const alt = (el.getAttribute("alt") ?? "").replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+      return `<img src="${src.replace(/"/g, "%22")}" alt="${alt}" width="${width}">`;
+    }
+    case "A": {
+      const href = el.getAttribute("href") ?? "";
+      const text = inner().trim();
+      // Empty once its image moved to a layout field (e.g. a linked logo) — drop it.
+      if (!text || !/^(https?:|mailto:|tel:)/i.test(href)) return text;
+      return `[${text}](${href})`;
+    }
+    case "STRONG":
+    case "B":
+      return wrap(inner(), "**");
+    case "EM":
+    case "I":
+      return wrap(inner(), "*");
+    default: {
+      const style = styleOf(el);
+      let text = inner();
+      if (/font-weight\s*:\s*(bold|[6-9]00)/.test(style)) text = wrap(text, "**");
+      if (/font-style\s*:\s*italic/.test(style)) text = wrap(text, "*");
+      return BLOCK_TAGS.has(el.tagName) ? ` ${text} ` : text;
+    }
+  }
+}
+
+/** Wraps text in a Markdown marker, keeping surrounding spaces outside it (`**a**` must hug the text). */
+function wrap(text: string, marker: string): string {
+  const match = text.match(/^(\s*)([\s\S]*?)(\s*)$/)!;
+  if (!match[2]) return text;
+  // Already fully wrapped (e.g. <b><strong>x</strong></b>)
+  if (match[2].startsWith(marker) && match[2].endsWith(marker)) return text;
+  return `${match[1]}${marker}${match[2]}${marker}${match[3]}`;
+}
+
+function escapeMarkdown(text: string): string {
+  return text.replace(/([\\`*_[\]])/g, "\\$1");
+}

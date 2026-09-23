@@ -1,7 +1,14 @@
 import { marked } from "marked";
 import srmLogoAsset from "@/assets/srm-logo.png.asset.json";
 
-const BASE_URL = process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:8080");
+// Server-side env vars aren't available in the browser (Composer preview), so fall back to the page's own origin there.
+const BASE_URL =
+  process.env.APP_URL ||
+  (process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : typeof window !== "undefined"
+      ? window.location.origin
+      : "http://localhost:8080");
 const AICSSYC_LOGO = `${BASE_URL}/__l5e/assets-v1/9a130604-9ee4-4773-893a-f387e16da8fa/aicssyc-logo.png`;
 const IEEE_CS_LOGO = `${BASE_URL}/__l5e/assets-v1/bc5fc91c-5700-4a7a-aced-4c00be793bc4/ieee-cs-logo.jpeg`;
 const FOOTER_IMAGE = `${BASE_URL}/__l5e/assets-v1/996f6ae7-67d5-454a-bbe7-b88f6e1dda40/ieee-cs-footer.png`;
@@ -303,24 +310,6 @@ export function buildEmailHtml({
   </table>
 </body>
 </html>`;
-}
-
-/** True for a full HTML document (uploaded templates are stored/sent in this form; Markdown bodies never are). */
-export function isHtmlDocument(s: string): boolean {
-  return /^\s*(<!doctype html|<html[\s>])/i.test(s);
-}
-
-/** Wraps an HTML fragment in a minimal document so email clients render it consistently. */
-export function toHtmlDocument(html: string): string {
-  if (isHtmlDocument(html)) return html;
-  return `<!DOCTYPE html>\n<html><head><meta charset="utf-8" /></head><body>${html}</body></html>`;
-}
-
-/** Fills {{name}} / {{domain}} in uploaded HTML, escaping the values so they can't break the markup. */
-export function mergeHtmlFields(html: string, name: string, domain: string): string {
-  return html
-    .replace(/\{\{\s*name\s*\}\}/gi, escapeHtml(name))
-    .replace(/\{\{\s*domain\s*\}\}/gi, escapeHtml(domain));
 }
 
 function escapeHtml(s: string): string {

@@ -11,7 +11,8 @@ import {
   upsertEmailTemplate,
   type EmailTemplate,
 } from "@/lib/templates.functions";
-import { buildEmailHtml, mergeHtmlFields, toHtmlDocument, type TemplateType } from "@/lib/email-template";
+import { buildEmailHtml, type TemplateType } from "@/lib/email-template";
+import { importEmailHtml } from "@/lib/html-import";
 import { AppHeader } from "@/components/AppHeader";
 import { RichMarkdownEditor } from "@/components/RichMarkdownEditor";
 import { TemplateManagerModal } from "@/components/TemplateManagerModal";
@@ -99,16 +100,12 @@ type TemplatePreset = {
   headerBg?: string;
   headerImageUrl?: string;
   footerImageUrl?: string;
-  /** Uploaded HTML template, sent as-is instead of the Markdown layout. */
-  bodyHtml?: string;
 };
 
-/** An uploaded HTML email. templateKey is set when it belongs to a saved template. */
-type UploadedHtml = { html: string; fileName: string; templateKey?: string };
+/** Set after an HTML file is imported: its name, plus the layout images taken from it. */
+type ImportedLayout = { fileName: string; headerImageUrl?: string; footerImageUrl?: string; logoUrls?: string[] };
 
-const MAX_HTML_BYTES = 1_000_000;
-// Gmail clips messages larger than ~102 KB behind a "View entire message" link.
-const GMAIL_CLIP_BYTES = 102_000;
+const MAX_HTML_BYTES = 2_000_000;
 
 function templateToPreset(t: EmailTemplate): TemplatePreset {
   return {
@@ -126,7 +123,6 @@ function templateToPreset(t: EmailTemplate): TemplatePreset {
     headerBg: (t as any).header_bg ?? undefined,
     headerImageUrl: (t as any).header_image_url ?? undefined,
     footerImageUrl: (t as any).footer_image_url ?? undefined,
-    bodyHtml: t.body_html ?? undefined,
   };
 }
 
@@ -171,7 +167,7 @@ function Composer() {
   const [showAicssycLogo, setShowAicssycLogo] = useState(false);
   const [sending, setSending] = useState(false);
   const [activeTab, setActiveTab] = useState<"compose" | "preview">("compose");
-  const [uploadedHtml, setUploadedHtml] = useState<UploadedHtml | null>(null);
+  const [imported, setImported] = useState<ImportedLayout | null>(null);
   const htmlFileRef = useRef<HTMLInputElement>(null);
 
   const send = useServerFn(sendOutreachEmail);
@@ -203,11 +199,29 @@ function Composer() {
     [allPresets, templateType],
   );
 
+  // Layout images/colours: from the imported file if there is one, otherwise from the selected template.
+  const layout = useMemo(
+    () =>
+      imported
+        ? {
+            logoUrls: imported.logoUrls ?? [],
+            headerBg: undefined,
+            headerImageUrl: imported.headerImageUrl,
+            footerImageUrl: imported.footerImageUrl,
+          }
+        : {
+            logoUrls: currentTemplate?.logoUrls ?? [],
+            headerBg: currentTemplate?.headerBg,
+            headerImageUrl: currentTemplate?.headerImageUrl,
+            footerImageUrl: currentTemplate?.footerImageUrl,
+          },
+    [imported, currentTemplate],
+  );
+
   const previewRecipient = parsedRecipients[0];
   const previewHtml = useMemo(() => {
     const name = previewRecipient?.name || "";
     const domain = previewRecipient?.domain || defaultDomain.trim();
-    if (uploadedHtml) return toHtmlDocument(mergeHtmlFields(uploadedHtml.html, name, domain));
     const merged = (s: string) =>
       s.replace(/\{\{\s*name\s*\}\}/gi, name).replace(/\{\{\s*domain\s*\}\}/gi, domain);
     return buildEmailHtml({
@@ -219,13 +233,13 @@ function Composer() {
       signOff: merged(signOff),
       ctaButtons: ctaButtons?.length > 0 ? ctaButtons : undefined,
       socialLinks: socialLinks?.length > 0 ? socialLinks : undefined,
-      logoUrls: currentTemplate?.logoUrls ?? [],
-      headerBg: currentTemplate?.headerBg,
-      headerImageUrl: currentTemplate?.headerImageUrl,
-      footerImageUrl: currentTemplate?.footerImageUrl,
+      logoUrls: layout.logoUrls,
+      headerBg: layout.headerBg,
+      headerImageUrl: layout.headerImageUrl,
+      footerImageUrl: layout.footerImageUrl,
       showAicssycLogo,
     });
-  }, [templateType, body, previewRecipient, headerTagline, eventDates, signOff, ctaButtons, socialLinks, currentTemplate, defaultDomain, showAicssycLogo, uploadedHtml]);
+  }, [templateType, body, previewRecipient, headerTagline, eventDates, signOff, ctaButtons, socialLinks, layout, defaultDomain, showAicssycLogo]);
 
   const applyPreset = (p: TemplatePreset) => {
     setTemplateType(p.key);
@@ -236,7 +250,7 @@ function Composer() {
     setSignOff(p.signOff ?? "");
     setCtaButtons(p.ctaButtons ?? []);
     setSocialLinks(p.socialLinks ?? []);
-    setUploadedHtml(p.bodyHtml ? { html: p.bodyHtml, fileName: p.label, templateKey: p.key } : null);
+    setImported(null);
   };
 
   useEffect(() => {
@@ -251,23 +265,18 @@ function Composer() {
     setSending(true);
     try {
       const res = await send({
-        data: uploadedHtml
-          ? {
-              templateType: uploadedHtml.templateKey || "uploaded_html",
-              markdownBody: "", recipients: parsedRecipients, subject,
-              rawHtml: uploadedHtml.html,
-            }
-          : {
-              templateType, markdownBody: body, recipients: parsedRecipients, subject,
-              headerTagline: headerTagline || undefined, eventDates: eventDates || undefined,
-              signOff: signOff || undefined,
-              ctaButtons: ctaButtons?.length > 0 ? ctaButtons : undefined,
-              socialLinks: socialLinks?.length > 0 ? socialLinks : undefined,
-              logoUrls: currentTemplate?.logoUrls ?? [],
-              headerBg: currentTemplate?.headerBg, headerImageUrl: currentTemplate?.headerImageUrl,
-              footerImageUrl: currentTemplate?.footerImageUrl,
-              showAicssycLogo,
-            },
+        data: {
+          templateType: imported ? "imported_html" : templateType,
+          markdownBody: body, recipients: parsedRecipients, subject,
+          headerTagline: headerTagline || undefined, eventDates: eventDates || undefined,
+          signOff: signOff || undefined,
+          ctaButtons: ctaButtons?.length > 0 ? ctaButtons : undefined,
+          socialLinks: socialLinks?.length > 0 ? socialLinks : undefined,
+          logoUrls: layout.logoUrls,
+          headerBg: layout.headerBg, headerImageUrl: layout.headerImageUrl,
+          footerImageUrl: layout.footerImageUrl,
+          showAicssycLogo,
+        },
       });
       const failed = res.results.filter((r) => !r.ok);
       if (failed.length === 0) {
@@ -292,57 +301,85 @@ function Composer() {
       return;
     }
     if (file.size > MAX_HTML_BYTES) {
-      toast.error("That file is over 1 MB — too large for an email.");
+      toast.error("That file is over 2 MB — too large to import.");
       return;
     }
-    const html = await file.text();
-    if (!/<[a-z!][^>]*>/i.test(html)) {
-      toast.error("That file doesn't look like HTML.");
+    const imp = importEmailHtml(await file.text());
+    if (!imp.body && !imp.headerTagline && !imp.signOff) {
+      toast.error("Couldn't find any email content in that file.");
       return;
     }
 
-    const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim();
-    if (title) setSubject(title);
-    const unusableImages = [...html.matchAll(/<img\b[^>]*?\bsrc\s*=\s*["']?(?!https?:|cid:)[^"'\s>]+/gi)].length;
-    if (unusableImages > 0) {
-      toast.warning(
-        `${unusableImages} image(s) use local or embedded paths and won't show in the email. Use full https:// image URLs.`,
-      );
-    }
-    if (file.size > GMAIL_CLIP_BYTES) {
-      toast.warning('Over 102 KB — Gmail will cut this email off behind "View entire message".');
-    }
-    setUploadedHtml({ html, fileName: file.name });
-    toast.success(`Loaded ${file.name}`);
+    if (imp.subject) setSubject(imp.subject);
+    setHeaderTagline(imp.headerTagline);
+    setEventDates(imp.eventDates);
+    setBody(imp.body);
+    setSignOff(imp.signOff);
+    setCtaButtons(imp.ctaButtons);
+    setSocialLinks(imp.socialLinks);
+    setShowAicssycLogo(imp.showAicssycLogo);
+    setImported({
+      fileName: file.name,
+      headerImageUrl: imp.headerImageUrl,
+      footerImageUrl: imp.footerImageUrl,
+      logoUrls: imp.logoUrls,
+    });
+
+    const filled = [
+      imp.subject && "subject",
+      imp.headerTagline && "tagline",
+      imp.eventDates && "dates",
+      imp.body && "body",
+      imp.ctaButtons.length > 0 && `${imp.ctaButtons.length} button(s)`,
+      imp.signOff && "sign-off",
+      imp.socialLinks.length > 0 && `${imp.socialLinks.length} social link(s)`,
+      (imp.headerImageUrl || imp.footerImageUrl || imp.logoUrls?.length) && "images",
+    ].filter(Boolean);
+    toast.success(`Imported ${file.name}: ${filled.join(", ")}. Check the fields before sending.`);
+    imp.notes.forEach((note) => toast.warning(note));
   };
 
-  const removeUploadedHtml = () => {
-    // Back to the selected template (which restores its own subject and fields).
+  const undoImport = () => {
+    // Back to the selected template's own fields.
     if (currentTemplate) applyPreset(currentTemplate);
-    else setUploadedHtml(null);
+    else setImported(null);
   };
 
-  const saveUploadedAsTemplate = async () => {
-    if (!uploadedHtml) return;
-    if (!subject.trim()) {
-      toast.error("Add a subject line first.");
+  const saveImportAsTemplate = async () => {
+    if (!imported) return;
+    if (!subject.trim() || !body.trim()) {
+      toast.error("A template needs a subject and a body.");
       return;
     }
-    const label = prompt("Name for this template", uploadedHtml.fileName.replace(/\.html?$/i, ""))?.trim();
+    const label = prompt("Name for this template", imported.fileName.replace(/\.html?$/i, ""))?.trim().slice(0, 120);
     if (!label) return;
     const base =
-      label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 56) || "html-template";
+      label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 56) || "imported-template";
     const taken = new Set(customTemplates.map((t) => t.key));
     let key = base;
     for (let i = 2; taken.has(key); i++) key = `${base}-${i}`;
     try {
       await upsertTemplate({
-        data: { key, label, description: "Uploaded HTML template", subject, body_md: "", body_html: uploadedHtml.html },
+        data: {
+          key,
+          label,
+          description: `Imported from ${imported.fileName}`.slice(0, 500),
+          subject,
+          body_md: body,
+          header_tagline: headerTagline || null,
+          event_dates: eventDates || null,
+          sign_off: signOff || null,
+          cta_buttons: ctaButtons.length ? ctaButtons : null,
+          social_links: socialLinks.length ? socialLinks : null,
+          logo_urls: layout.logoUrls,
+          header_image_url: layout.headerImageUrl || null,
+          footer_image_url: layout.footerImageUrl || null,
+        },
       });
       await refetchTemplates();
-      // Select it only after the refetch, so the "template missing" reset below doesn't fire.
+      // Select it only after the refetch, so the "selected template missing" reset doesn't fire.
       setTemplateType(key);
-      setUploadedHtml({ ...uploadedHtml, fileName: label, templateKey: key });
+      setImported(null);
       toast.success(`Saved as template "${label}"`);
     } catch (e: any) {
       toast.error(e?.message || "Save failed");
@@ -434,8 +471,8 @@ function Composer() {
                   }}
                 >
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    ✦ {uploadedHtml && !uploadedHtml.templateKey
-                      ? `UPLOADED: ${uploadedHtml.fileName.toUpperCase()}`
+                    ✦ {imported
+                      ? `IMPORTED: ${imported.fileName.toUpperCase()}`
                       : templateType ? (allPresets.find(p => p.key === templateType)?.label.toUpperCase() || "SELECT TEMPLATE") : "NO TEMPLATES FOUND"}
                   </span>
                   <span style={{ marginLeft: "0.5rem", fontSize: "0.6rem", opacity: 0.6 }}>{dropdownOpen ? "▲" : "▼"}</span>
@@ -495,7 +532,7 @@ function Composer() {
               />
               <button
                 onClick={() => htmlFileRef.current?.click()}
-                title="Upload an .html email template"
+                title="Fill the fields below from an .html email"
                 className="font-brutalist"
                 style={{
                   padding: "0.6rem 0.9rem",
@@ -573,40 +610,28 @@ function Composer() {
             <div className="sc-card" style={{ padding: 0, overflow: "hidden", flexShrink: 0 }}>
               <div className="sc-card-header">EMAIL CONTENT</div>
               <div style={{ padding: "0.875rem", display: "flex", flexDirection: "column", gap: "0.875rem" }}>
-                <Field label="Subject line">
-                  <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} className="sc-input" />
-                </Field>
-                {uploadedHtml ? (
-                  <div style={{ border: `3px solid ${INK}`, background: PAPER, padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-                    <div className="font-brutalist" style={{ fontSize: "0.8rem", letterSpacing: "0.08em", color: INK, overflowWrap: "anywhere" }}>
-                      ⬆ {uploadedHtml.templateKey ? "HTML TEMPLATE" : "UPLOADED HTML"} — {uploadedHtml.fileName}
+                {imported && (
+                  <div style={{ border: `2px solid ${INK}`, background: PAPER, padding: "0.6rem 0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    <div className="font-mono" style={{ fontSize: "0.72rem", color: INK, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+                      ⬆ Fields below were filled from <strong>{imported.fileName}</strong>. Check them, then send{isAdmin ? " or save them as a template" : ""}.
                     </div>
-                    <p className="font-mono" style={{ fontSize: "0.7rem", color: "#6b6050", margin: 0, lineHeight: 1.5 }}>
-                      Sent exactly as uploaded ({Math.max(1, Math.round(new Blob([uploadedHtml.html]).size / 1024))} KB), so the layout
-                      fields are hidden. <code style={{ color: RUST }}>{"{{name}}"}</code> and <code style={{ color: RUST }}>{"{{domain}}"}</code> in
-                      the HTML are still filled in for each recipient.
-                    </p>
                     <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                      {isAdmin && !uploadedHtml.templateKey && (
-                        <button type="button" onClick={saveUploadedAsTemplate} className="font-brutalist"
+                      {isAdmin && (
+                        <button type="button" onClick={saveImportAsTemplate} className="font-brutalist"
                           style={{ padding: "0.3rem 0.7rem", fontSize: "0.7rem", letterSpacing: "0.05em", background: INK, color: CREAM, border: `2px solid ${INK}`, cursor: "pointer" }}>
                           SAVE AS TEMPLATE
                         </button>
                       )}
-                      <button type="button" onClick={() => htmlFileRef.current?.click()} className="font-brutalist"
+                      <button type="button" onClick={undoImport} className="font-brutalist"
                         style={{ padding: "0.3rem 0.7rem", fontSize: "0.7rem", letterSpacing: "0.05em", background: CREAM, color: INK, border: `2px solid ${INK}`, cursor: "pointer" }}>
-                        REPLACE FILE
+                        ↺ UNDO IMPORT
                       </button>
-                      {!uploadedHtml.templateKey && (
-                        <button type="button" onClick={removeUploadedHtml} className="font-brutalist"
-                          style={{ padding: "0.3rem 0.7rem", fontSize: "0.7rem", letterSpacing: "0.05em", background: RUST, color: CREAM, border: `2px solid ${INK}`, cursor: "pointer" }}>
-                          ✕ REMOVE
-                        </button>
-                      )}
                     </div>
                   </div>
-                ) : (
-                <>
+                )}
+                <Field label="Subject line">
+                  <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} className="sc-input" />
+                </Field>
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
                   <Field label="Header tagline">
                     <input type="text" value={headerTagline} onChange={(e) => setHeaderTagline(e.target.value)} className="sc-input" />
@@ -754,8 +779,6 @@ function Composer() {
                     Include AICSSYC Logo Below Sign-off
                   </label>
                 </Field>
-                </>
-                )}
               </div>
             </div>
 
