@@ -305,6 +305,24 @@ export function buildEmailHtml({
 </html>`;
 }
 
+/** True for a full HTML document (uploaded templates are stored/sent in this form; Markdown bodies never are). */
+export function isHtmlDocument(s: string): boolean {
+  return /^\s*(<!doctype html|<html[\s>])/i.test(s);
+}
+
+/** Wraps an HTML fragment in a minimal document so email clients render it consistently. */
+export function toHtmlDocument(html: string): string {
+  if (isHtmlDocument(html)) return html;
+  return `<!DOCTYPE html>\n<html><head><meta charset="utf-8" /></head><body>${html}</body></html>`;
+}
+
+/** Fills {{name}} / {{domain}} in uploaded HTML, escaping the values so they can't break the markup. */
+export function mergeHtmlFields(html: string, name: string, domain: string): string {
+  return html
+    .replace(/\{\{\s*name\s*\}\}/gi, escapeHtml(name))
+    .replace(/\{\{\s*domain\s*\}\}/gi, escapeHtml(domain));
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")

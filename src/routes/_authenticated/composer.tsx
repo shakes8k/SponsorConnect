@@ -1,12 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { sendOutreachEmail } from "@/lib/email.functions";
 import { getMe } from "@/lib/auth.functions";
-import { listEmailTemplates, deleteEmailTemplate, type EmailTemplate } from "@/lib/templates.functions";
-import { buildEmailHtml, type TemplateType } from "@/lib/email-template";
+import {
+  listEmailTemplates,
+  deleteEmailTemplate,
+  upsertEmailTemplate,
+  type EmailTemplate,
+} from "@/lib/templates.functions";
+import { buildEmailHtml, mergeHtmlFields, toHtmlDocument, type TemplateType } from "@/lib/email-template";
 import { AppHeader } from "@/components/AppHeader";
 import { RichMarkdownEditor } from "@/components/RichMarkdownEditor";
 import { TemplateManagerModal } from "@/components/TemplateManagerModal";
@@ -94,7 +99,16 @@ type TemplatePreset = {
   headerBg?: string;
   headerImageUrl?: string;
   footerImageUrl?: string;
+  /** Uploaded HTML template, sent as-is instead of the Markdown layout. */
+  bodyHtml?: string;
 };
+
+/** An uploaded HTML email. templateKey is set when it belongs to a saved template. */
+type UploadedHtml = { html: string; fileName: string; templateKey?: string };
+
+const MAX_HTML_BYTES = 1_000_000;
+// Gmail clips messages larger than ~102 KB behind a "View entire message" link.
+const GMAIL_CLIP_BYTES = 102_000;
 
 function templateToPreset(t: EmailTemplate): TemplatePreset {
   return {
@@ -112,6 +126,7 @@ function templateToPreset(t: EmailTemplate): TemplatePreset {
     headerBg: (t as any).header_bg ?? undefined,
     headerImageUrl: (t as any).header_image_url ?? undefined,
     footerImageUrl: (t as any).footer_image_url ?? undefined,
+    bodyHtml: t.body_html ?? undefined,
   };
 }
 
@@ -156,9 +171,12 @@ function Composer() {
   const [showAicssycLogo, setShowAicssycLogo] = useState(false);
   const [sending, setSending] = useState(false);
   const [activeTab, setActiveTab] = useState<"compose" | "preview">("compose");
+  const [uploadedHtml, setUploadedHtml] = useState<UploadedHtml | null>(null);
+  const htmlFileRef = useRef<HTMLInputElement>(null);
 
   const send = useServerFn(sendOutreachEmail);
   const delTemplate = useServerFn(deleteEmailTemplate);
+  const upsertTemplate = useServerFn(upsertEmailTemplate);
 
   const parsedRecipients = useMemo(() => {
     const out: Array<{ email: string; name?: string; domain?: string }> = [];
@@ -189,6 +207,7 @@ function Composer() {
   const previewHtml = useMemo(() => {
     const name = previewRecipient?.name || "";
     const domain = previewRecipient?.domain || defaultDomain.trim();
+    if (uploadedHtml) return toHtmlDocument(mergeHtmlFields(uploadedHtml.html, name, domain));
     const merged = (s: string) =>
       s.replace(/\{\{\s*name\s*\}\}/gi, name).replace(/\{\{\s*domain\s*\}\}/gi, domain);
     return buildEmailHtml({
@@ -206,7 +225,7 @@ function Composer() {
       footerImageUrl: currentTemplate?.footerImageUrl,
       showAicssycLogo,
     });
-  }, [templateType, body, previewRecipient, headerTagline, eventDates, signOff, ctaButtons, socialLinks, currentTemplate, defaultDomain, showAicssycLogo]);
+  }, [templateType, body, previewRecipient, headerTagline, eventDates, signOff, ctaButtons, socialLinks, currentTemplate, defaultDomain, showAicssycLogo, uploadedHtml]);
 
   const applyPreset = (p: TemplatePreset) => {
     setTemplateType(p.key);
@@ -217,6 +236,7 @@ function Composer() {
     setSignOff(p.signOff ?? "");
     setCtaButtons(p.ctaButtons ?? []);
     setSocialLinks(p.socialLinks ?? []);
+    setUploadedHtml(p.bodyHtml ? { html: p.bodyHtml, fileName: p.label, templateKey: p.key } : null);
   };
 
   useEffect(() => {
@@ -231,17 +251,23 @@ function Composer() {
     setSending(true);
     try {
       const res = await send({
-        data: {
-          templateType, markdownBody: body, recipients: parsedRecipients, subject,
-          headerTagline: headerTagline || undefined, eventDates: eventDates || undefined,
-          signOff: signOff || undefined,
-          ctaButtons: ctaButtons?.length > 0 ? ctaButtons : undefined,
-          socialLinks: socialLinks?.length > 0 ? socialLinks : undefined,
-          logoUrls: currentTemplate?.logoUrls ?? [],
-          headerBg: currentTemplate?.headerBg, headerImageUrl: currentTemplate?.headerImageUrl,
-          footerImageUrl: currentTemplate?.footerImageUrl,
-          showAicssycLogo,
-        },
+        data: uploadedHtml
+          ? {
+              templateType: uploadedHtml.templateKey || "uploaded_html",
+              markdownBody: "", recipients: parsedRecipients, subject,
+              rawHtml: uploadedHtml.html,
+            }
+          : {
+              templateType, markdownBody: body, recipients: parsedRecipients, subject,
+              headerTagline: headerTagline || undefined, eventDates: eventDates || undefined,
+              signOff: signOff || undefined,
+              ctaButtons: ctaButtons?.length > 0 ? ctaButtons : undefined,
+              socialLinks: socialLinks?.length > 0 ? socialLinks : undefined,
+              logoUrls: currentTemplate?.logoUrls ?? [],
+              headerBg: currentTemplate?.headerBg, headerImageUrl: currentTemplate?.headerImageUrl,
+              footerImageUrl: currentTemplate?.footerImageUrl,
+              showAicssycLogo,
+            },
       });
       const failed = res.results.filter((r) => !r.ok);
       if (failed.length === 0) {
@@ -254,6 +280,72 @@ function Composer() {
       toast.error(e?.message || "Send failed");
     } finally {
       setSending(false);
+    }
+  };
+
+  const handleHtmlFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // lets the same file be picked again
+    if (!file) return;
+    if (!/\.html?$/i.test(file.name) && file.type !== "text/html") {
+      toast.error("Choose an .html file.");
+      return;
+    }
+    if (file.size > MAX_HTML_BYTES) {
+      toast.error("That file is over 1 MB — too large for an email.");
+      return;
+    }
+    const html = await file.text();
+    if (!/<[a-z!][^>]*>/i.test(html)) {
+      toast.error("That file doesn't look like HTML.");
+      return;
+    }
+
+    const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim();
+    if (title) setSubject(title);
+    const unusableImages = [...html.matchAll(/<img\b[^>]*?\bsrc\s*=\s*["']?(?!https?:|cid:)[^"'\s>]+/gi)].length;
+    if (unusableImages > 0) {
+      toast.warning(
+        `${unusableImages} image(s) use local or embedded paths and won't show in the email. Use full https:// image URLs.`,
+      );
+    }
+    if (file.size > GMAIL_CLIP_BYTES) {
+      toast.warning('Over 102 KB — Gmail will cut this email off behind "View entire message".');
+    }
+    setUploadedHtml({ html, fileName: file.name });
+    toast.success(`Loaded ${file.name}`);
+  };
+
+  const removeUploadedHtml = () => {
+    // Back to the selected template (which restores its own subject and fields).
+    if (currentTemplate) applyPreset(currentTemplate);
+    else setUploadedHtml(null);
+  };
+
+  const saveUploadedAsTemplate = async () => {
+    if (!uploadedHtml) return;
+    if (!subject.trim()) {
+      toast.error("Add a subject line first.");
+      return;
+    }
+    const label = prompt("Name for this template", uploadedHtml.fileName.replace(/\.html?$/i, ""))?.trim();
+    if (!label) return;
+    const base =
+      label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 56) || "html-template";
+    const taken = new Set(customTemplates.map((t) => t.key));
+    let key = base;
+    for (let i = 2; taken.has(key); i++) key = `${base}-${i}`;
+    try {
+      await upsertTemplate({
+        data: { key, label, description: "Uploaded HTML template", subject, body_md: "", body_html: uploadedHtml.html },
+      });
+      await refetchTemplates();
+      // Select it only after the refetch, so the "template missing" reset below doesn't fire.
+      setTemplateType(key);
+      setUploadedHtml({ ...uploadedHtml, fileName: label, templateKey: key });
+      toast.success(`Saved as template "${label}"`);
+    } catch (e: any) {
+      toast.error(e?.message || "Save failed");
     }
   };
 
@@ -342,7 +434,9 @@ function Composer() {
                   }}
                 >
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    ✦ {templateType ? (allPresets.find(p => p.key === templateType)?.label.toUpperCase() || "SELECT TEMPLATE") : "NO TEMPLATES FOUND"}
+                    ✦ {uploadedHtml && !uploadedHtml.templateKey
+                      ? `UPLOADED: ${uploadedHtml.fileName.toUpperCase()}`
+                      : templateType ? (allPresets.find(p => p.key === templateType)?.label.toUpperCase() || "SELECT TEMPLATE") : "NO TEMPLATES FOUND"}
                   </span>
                   <span style={{ marginLeft: "0.5rem", fontSize: "0.6rem", opacity: 0.6 }}>{dropdownOpen ? "▲" : "▼"}</span>
                 </button>
@@ -391,6 +485,29 @@ function Composer() {
                   </>
                 )}
               </div>
+
+              <input
+                ref={htmlFileRef}
+                type="file"
+                accept=".html,.htm,text/html"
+                onChange={handleHtmlFile}
+                style={{ display: "none" }}
+              />
+              <button
+                onClick={() => htmlFileRef.current?.click()}
+                title="Upload an .html email template"
+                className="font-brutalist"
+                style={{
+                  padding: "0.6rem 0.9rem",
+                  background: PAPER, color: INK,
+                  border: `3px solid ${INK}`,
+                  fontSize: "0.75rem", letterSpacing: "0.08em",
+                  cursor: "pointer", whiteSpace: "nowrap",
+                  flexShrink: 0,
+                }}
+              >
+                ⬆ UPLOAD HTML
+              </button>
 
               {isAdmin && (
                 <div style={{ display: "flex", gap: "0.5rem" }}>
@@ -459,6 +576,37 @@ function Composer() {
                 <Field label="Subject line">
                   <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} className="sc-input" />
                 </Field>
+                {uploadedHtml ? (
+                  <div style={{ border: `3px solid ${INK}`, background: PAPER, padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                    <div className="font-brutalist" style={{ fontSize: "0.8rem", letterSpacing: "0.08em", color: INK, overflowWrap: "anywhere" }}>
+                      ⬆ {uploadedHtml.templateKey ? "HTML TEMPLATE" : "UPLOADED HTML"} — {uploadedHtml.fileName}
+                    </div>
+                    <p className="font-mono" style={{ fontSize: "0.7rem", color: "#6b6050", margin: 0, lineHeight: 1.5 }}>
+                      Sent exactly as uploaded ({Math.max(1, Math.round(new Blob([uploadedHtml.html]).size / 1024))} KB), so the layout
+                      fields are hidden. <code style={{ color: RUST }}>{"{{name}}"}</code> and <code style={{ color: RUST }}>{"{{domain}}"}</code> in
+                      the HTML are still filled in for each recipient.
+                    </p>
+                    <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                      {isAdmin && !uploadedHtml.templateKey && (
+                        <button type="button" onClick={saveUploadedAsTemplate} className="font-brutalist"
+                          style={{ padding: "0.3rem 0.7rem", fontSize: "0.7rem", letterSpacing: "0.05em", background: INK, color: CREAM, border: `2px solid ${INK}`, cursor: "pointer" }}>
+                          SAVE AS TEMPLATE
+                        </button>
+                      )}
+                      <button type="button" onClick={() => htmlFileRef.current?.click()} className="font-brutalist"
+                        style={{ padding: "0.3rem 0.7rem", fontSize: "0.7rem", letterSpacing: "0.05em", background: CREAM, color: INK, border: `2px solid ${INK}`, cursor: "pointer" }}>
+                        REPLACE FILE
+                      </button>
+                      {!uploadedHtml.templateKey && (
+                        <button type="button" onClick={removeUploadedHtml} className="font-brutalist"
+                          style={{ padding: "0.3rem 0.7rem", fontSize: "0.7rem", letterSpacing: "0.05em", background: RUST, color: CREAM, border: `2px solid ${INK}`, cursor: "pointer" }}>
+                          ✕ REMOVE
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                <>
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
                   <Field label="Header tagline">
                     <input type="text" value={headerTagline} onChange={(e) => setHeaderTagline(e.target.value)} className="sc-input" />
@@ -606,6 +754,8 @@ function Composer() {
                     Include AICSSYC Logo Below Sign-off
                   </label>
                 </Field>
+                </>
+                )}
               </div>
             </div>
 

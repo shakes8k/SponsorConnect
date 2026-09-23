@@ -87,7 +87,8 @@ type Draft = {
   header_bg: string;
   header_image_url: string;
   footer_image_url: string;
-
+  /** Uploaded HTML template: body comes from body_html, which this modal never edits. */
+  has_html: boolean;
 };
 
 const EMPTY: Draft = {
@@ -105,7 +106,7 @@ const EMPTY: Draft = {
   header_bg: "",
   header_image_url: "",
   footer_image_url: "",
-
+  has_html: false,
 };
 
 function toDraft(t: EmailTemplate): Draft {
@@ -125,7 +126,7 @@ function toDraft(t: EmailTemplate): Draft {
     header_bg: t.header_bg ?? "",
     header_image_url: t.header_image_url ?? "",
     footer_image_url: t.footer_image_url ?? "",
-
+    has_html: Boolean(t.body_html),
   };
 }
 
@@ -160,7 +161,7 @@ export function TemplateManagerModal({ open, onClose, templates }: Props) {
   };
 
   const save = async () => {
-    if (!draft.key.trim() || !draft.label.trim() || !draft.subject.trim() || !draft.body_md.trim()) {
+    if (!draft.key.trim() || !draft.label.trim() || !draft.subject.trim() || (!draft.body_md.trim() && !draft.has_html)) {
       toast.error("Key, label, subject and body are required.");
       return;
     }
@@ -338,17 +339,25 @@ export function TemplateManagerModal({ open, onClose, templates }: Props) {
               </div>
             </div>
 
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-700">
-                Body <span className="font-normal text-slate-400">(Markdown — use {"{{name}}"} for recipient name)</span>
-              </label>
-              <RichMarkdownEditor
-                value={draft.body_md}
-                onChange={(v) => setDraft({ ...draft, body_md: v })}
-                height={280}
-                preview="edit"
-              />
-            </div>
+            {draft.has_html ? (
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                This is an uploaded HTML template — the email is sent exactly as the uploaded file, so the
+                layout fields here don't apply. To change its content, upload the new file in the Composer and
+                save it as a template.
+              </div>
+            ) : (
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">
+                  Body <span className="font-normal text-slate-400">(Markdown — use {"{{name}}"} for recipient name)</span>
+                </label>
+                <RichMarkdownEditor
+                  value={draft.body_md}
+                  onChange={(v) => setDraft({ ...draft, body_md: v })}
+                  height={280}
+                  preview="edit"
+                />
+              </div>
+            )}
 
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-700">Sign-off</label>
