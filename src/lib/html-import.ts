@@ -259,17 +259,18 @@ function importAsSkin(html: string): Omit<ImportedEmail, "subject"> | null {
     const block = text.parentElement?.closest<HTMLElement>("p, li, h1, h2, h3, h4, h5, h6, td, th, div, blockquote");
     if (block && !blocks.includes(block)) blocks.push(block);
   }
-  const firstLine = (el: Element) => {
+  const linesOf = (el: Element) => {
     const copy = el.cloneNode(true) as Element;
     copy.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
-    return clean((copy.textContent ?? "").split("\n").find((l) => l.trim()) ?? "");
+    return (copy.textContent ?? "").split("\n").map(clean).filter(Boolean);
   };
+  const firstLine = (el: Element) => linesOf(el)[0] ?? "";
   const afterStart = (el: Element) => !start || (precedes(start, el) && !start.contains(el));
 
-  const signOff = [...blocks].reverse().find((b) => {
-    const line = firstLine(b);
-    return afterStart(b) && line.length <= 40 && SIGN_OFF_START.test(line);
-  });
+  // The last block with a short "Warm regards," / "Thanks," line — it may follow a closing sentence in the same block.
+  const signOff = [...blocks].reverse().find(
+    (b) => afterStart(b) && linesOf(b).some((line) => line.length <= 40 && SIGN_OFF_START.test(line)),
+  );
   const buttons = Array.from(root.querySelectorAll<HTMLAnchorElement>("a[href]")).filter(
     (a) =>
       isHttp(a.getAttribute("href")) &&
@@ -301,7 +302,8 @@ function importAsSkin(html: string): Omit<ImportedEmail, "subject"> | null {
     if (greeting && kid.contains(greeting)) roles.add("greeting");
     if (signOff && kid.contains(signOff)) roles.add("signoff");
     if (buttons.some((a) => kid.contains(a))) roles.add("cta");
-    if (bodyBlocks.some((b) => kid.contains(b))) roles.add("body");
+    // Text next to a button (e.g. a note under it) belongs to the button block.
+    else if (bodyBlocks.some((b) => kid.contains(b))) roles.add("body");
     return roles;
   };
   const roles = kids.map(rolesOf);
@@ -332,25 +334,47 @@ function importAsSkin(html: string): Omit<ImportedEmail, "subject"> | null {
     const kid = kids[i];
     const role: Role = roles[i].values().next().value ?? "body"; // spacers inside the region go with the body
     if (role === "greeting") {
+      const text = clean(greeting!.textContent);
       meta.greeting = {
         tag: greeting!.tagName.toLowerCase(),
         style: greeting!.getAttribute("style") ?? "",
         boldName: Boolean(greeting!.querySelector("strong, b")),
+        className: greeting!.getAttribute("class") ?? undefined,
+        // "Dear Esteemed Delegate," is a fine fallback; "Dear [Recipient Name]," is a placeholder, not one.
+        fallbackHtml: /[[\]{}<>]/.test(text) ? undefined : greeting!.innerHTML.trim(),
       };
+    } else if (role === "signoff" && signOff!.tagName !== "P") {
+      // A sign-off cell / div: fill it in place, so its wrapper (e.g. a divider above it) stays.
+      // Its paragraphs inherit the cell's colours (and dark-mode class).
+      signOffMd = toMarkdown(signOff!);
+      meta.signOffStyle = "margin: 0 0 10px 0;";
+      signOff!.replaceChildren(doc.createComment("sc:signoff"));
+      placed.add(role);
+      continue;
     } else if (role === "signoff") {
       signOffMd = toMarkdown(kid);
       meta.signOffStyle = signOff!.getAttribute("style") ?? undefined;
+      meta.signOffClass = signOff!.getAttribute("class") ?? undefined;
     } else if (role === "cta" && !placed.has("cta")) {
       const template = kid.cloneNode(true) as HTMLElement;
       const button = Array.from(template.querySelectorAll<HTMLAnchorElement>("a[href]")).find((a) => looksLikeButton(a));
       if (button) {
+        const href = button.getAttribute("href")!;
         button.setAttribute("href", "{{sc_url}}");
         button.textContent = "{{sc_label}}";
-        meta.ctaHtml = template.outerHTML;
+        // Outlook's copy of the button (VML in a conditional comment) has the link and label baked in too.
+        meta.ctaHtml = template.outerHTML
+          .split(href)
+          .join("{{sc_url}}")
+          .replace(/(<center\b[^>]*>)[\s\S]*?(<\/center>)/g, "$1{{sc_label}}$2");
       }
     } else if (role === "body") {
       bodyParts.push(...kidToMarkdown(kid));
-      meta.paragraphStyle ??= (kid.tagName === "P" ? kid : kid.querySelector("p"))?.getAttribute("style") ?? undefined;
+      const paragraph = kid.tagName === "P" ? kid : kid.querySelector("p");
+      if (paragraph && meta.paragraphStyle === undefined) {
+        meta.paragraphStyle = paragraph.getAttribute("style") ?? undefined;
+        meta.paragraphClass = paragraph.getAttribute("class") ?? undefined;
+      }
     }
     if (placed.has(role)) kid.remove();
     else kid.replaceWith(slotFor(kid, role));
@@ -372,7 +396,13 @@ function importAsSkin(html: string): Omit<ImportedEmail, "subject"> | null {
     subtitle.replaceChildren(doc.createComment("sc:dates"));
   }
 
-  if (greeting) notes.push('The greeting is now filled in for each recipient ("Dear <name>,") and left out when there is no name.');
+  if (greeting) {
+    notes.push(
+      meta.greeting?.fallbackHtml
+        ? `The greeting is now filled in for each recipient ("Dear <name>,"); recipients without a name get "${clean(greeting.textContent)}".`
+        : 'The greeting is now filled in for each recipient ("Dear <name>,") and left out when there is no name.',
+    );
+  }
   if (root.querySelector("svg")) {
     notes.push("This design contains an SVG graphic. Gmail doesn't display SVGs, so it will be missing there — use a PNG image instead.");
   }
@@ -528,9 +558,9 @@ function toMarkdownBlocks(root: Element): string[] {
       .split("\n")
       .map((line) => line.replace(/[ \t]+/g, " ").trim())
       .join("\n")
-      .replace(/\n{2,}/g, "\n")
       .trim();
-    if (text) blocks.push(text);
+    // A blank line (e.g. <br><br>) starts a new paragraph.
+    for (const part of text.split(/\n{2,}/)) if (part.trim()) blocks.push(part.trim());
     current = "";
   };
 
